@@ -32,7 +32,7 @@ class UiController : public QObject {
     Q_PROPERTY(int codecIndex MEMBER codecIndex NOTIFY changed)
     Q_PROPERTY(int remainingMinutes MEMBER remainingMinutes NOTIFY changed)
 public:
-    QVariantList bitrateChoices() const { return {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000}; }
+    QVariantList bitrateChoices() const { return {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000}; }
     int codecIndex=0, remainingMinutes=-1;
     bool signedIn=false, busy=false, active=false, fullscreen=true, relativeMouse=true, showStats=true;
     QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice, streamWarning, shutdownStatus;
@@ -121,9 +121,17 @@ private slots:
         auto codec=window->findChild<QObject*>("codecPicker"); QVERIFY(codec);
         QTRY_COMPARE(codec->property("currentIndex").toInt(),1);
         QCOMPARE(codec->property("count").toInt(),3);
+        QTRY_COMPARE(codec->property("currentText").toString(),QString("H.265 - Experimental"));
         auto bitrate=window->findChild<QObject*>("bitratePicker"); QVERIFY(bitrate);
-        QCOMPARE(bitrate->property("count").toInt(),13);
+        QCOMPARE(bitrate->property("count").toInt(),15);
         QTRY_COMPARE(bitrate->property("currentText").toString(),QString("25 Mbps"));
+        for (int index : {13,14}) {
+            bitrate->setProperty("currentIndex",index);
+            QVERIFY(QMetaObject::invokeMethod(bitrate,"activated",Q_ARG(int,index)));
+            const int expected=index==13 ? 45000 : 50000;
+            QCOMPARE(controller.bitrate,expected);
+            QCOMPARE(bitrate->property("currentText").toString(),QString("%1 Mbps").arg(expected/1000));
+        }
         auto remaining=window->findChild<QObject*>("remainingTimeLabel"); QVERIFY(remaining);
         QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: 750 minutes"));
         controller.remainingMinutes=-1; emit controller.changed();
@@ -131,6 +139,7 @@ private slots:
         codec->setProperty("currentIndex",2);
         QVERIFY(QMetaObject::invokeMethod(codec,"activated",Q_ARG(int,2)));
         QCOMPARE(controller.codecIndex,2);
+        QCOMPARE(codec->property("currentText").toString(),QString("AV1 - Experimental"));
     }
     void retiredResolutionAndPowerStatus() {
         controller.signedIn=true; controller.detail="Disconnected.";

@@ -17,7 +17,7 @@ inline int savedResolutionIndex(int index, int schema) {
     }
     return index >= 0 && index <= 3 ? index : 0;
 }
-constexpr int BitrateChoices[] = {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000};
+constexpr int BitrateChoices[] = {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000};
 inline int savedBitrate(int bitrate) {
     for (int choice : BitrateChoices) if (bitrate == choice) return bitrate;
     return 6000;
@@ -71,7 +71,7 @@ struct StreamSettings {
         return 0;
     }
     bool isValid() const {
-        return preset() && (fps == 30 || fps == 60 || fps == 120) && bitrate >= 2000 && bitrate <= 40000;
+        return preset() && (fps == 30 || fps == 60 || fps == 120) && bitrate >= 2000 && bitrate <= 50000;
     }
     QString providerSpec() const {
         return QString("%1 %2 %3 10").arg(preset()).arg(bitrate).arg(fps);

@@ -26,7 +26,7 @@
     }
   ],
   "sdk_archive_sha256": "39fab7c95f5d513a6eb3bb19c66f1ae66bbf41dfe4118f82fabe3b46cc502d17",
-  "native_version": "1.0.4",
+  "native_version": "1.0.5",
   "repository": "https://github.com/AshrafMd-1/antcloud-native-macos",
-  "change_history": "Git history; the package contains complete modified source, without archived patches."
+  "source_layout": "Complete modified engine and pinned public dependency source under src/."
 }

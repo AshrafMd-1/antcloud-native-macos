@@ -100,7 +100,7 @@ void Controller::start() {
     const QSize size = resolutions[m_ResolutionIndex];
     StreamSettings spec{size.width(), size.height(), frameRates[m_FpsIndex], m_Bitrate};
     if (!spec.isValid() || spec.preset() > m_Limit) {
-        m_Error = "Choose a resolution within your account’s limit and a bitrate from 2 to 40 Mbps."; emit changed(); return;
+        m_Error = "Choose a resolution within your account’s limit and a bitrate from 2 to 50 Mbps."; emit changed(); return;
     }
     QSettings settings;
     settings.setValue("native/resolutionIndex", m_ResolutionIndex); settings.setValue("native/fpsIndex", m_FpsIndex);

@@ -263,11 +263,18 @@ private slots:
         QVERIFY(ended.wait(2000));
         QVERIFY(!ended.first()[0].toString().isEmpty()); // Genuine next-session error is retained.
     }
+    void selectedBitrateReachesProvider_data() {
+        QTest::addColumn<int>("bitrate");
+        QTest::newRow("25 Mbps") << 25000;
+        QTest::newRow("45 Mbps") << 45000;
+        QTest::newRow("50 Mbps") << 50000;
+    }
     void selectedBitrateReachesProvider() {
-        fixture->expectedBitrate = 25000;
+        QFETCH(int, bitrate);
+        fixture->expectedBitrate = bitrate;
         QSignalSpy host(worker, &ProviderWorker::hostAvailable);
         QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
-            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,25000));
+            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,bitrate));
         QVERIFY(host.wait(3000));
         QVERIFY(!fixture->wrongQuery); // Inspect the actual received WebSocket request.
     }

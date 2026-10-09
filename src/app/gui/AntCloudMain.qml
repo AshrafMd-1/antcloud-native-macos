@@ -434,7 +434,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 objectName: "codecPicker"
                                 currentIndex: appWindow.controller.codecIndex
-                                model: ["H.264 · default", "H.265 / HEVC", "AV1"]
+                                model: ["H.264 · default", "H.265 - Experimental", "AV1 - Experimental"]
                                 onActivated: appWindow.controller.codecIndex = currentIndex
                             }
                         }

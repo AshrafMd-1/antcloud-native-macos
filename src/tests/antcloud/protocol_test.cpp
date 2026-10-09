@@ -35,7 +35,8 @@ int main(int argc, char** argv) {
     assert(savedResolutionIndex(99, 2) == 0);
     assert(savedResolutionIndex(-1, 1) == 0);
     for (int bitrate : BitrateChoices) assert(savedBitrate(bitrate) == bitrate);
-    assert(savedBitrate(1999) == 6000 && savedBitrate(40001) == 6000);
+    assert(savedBitrate(45000) == 45000 && savedBitrate(50000) == 50000);
+    assert(savedBitrate(1999) == 6000 && savedBitrate(50001) == 6000);
     assert(savedCodecIndex(-1) == 0 && savedCodecIndex(3) == 0);
     for (int codec = 0; codec < 3; ++codec) assert(savedCodecIndex(codec) == codec);
     assert(providerMinutes(0) == 0 && providerMinutes(123) == 123);
@@ -50,7 +51,14 @@ int main(int argc, char** argv) {
     assert(accountRemainingMinutes({}) == -1);
     s = {}; s.fps = 61;
     assert(!s.isValid());
-    s = {}; s.bitrate = 40001;
+    for (int bitrate : {45000, 50000}) {
+        s = {}; s.bitrate = bitrate;
+        assert(s.isValid());
+        assert(s.providerSpec() == QString("720 %1 60 10").arg(bitrate));
+    }
+    s = {}; s.bitrate = 1999;
+    assert(!s.isValid());
+    s = {}; s.bitrate = 50001;
     assert(!s.isValid());
     auto frame = parseFrame("42[\"new_connection\",{\"clients\":2}]");
     assert(frame.kind == Frame::Event && frame.name == "new_connection");

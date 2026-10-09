@@ -1,58 +1,65 @@
-# Build and install AntCloud Native
+# Install and use AntCloud Native
 
-## Requirements
+## Choose your installation
 
-- A Mac with Apple command-line developer tools.
-- Homebrew and Python 3.10 or newer, used only for building.
-- Qt 6.11 or newer. The builder installs missing Homebrew modules and reuses installed ones; existing modules must be compatible with each other.
+Use `AntCloudNative-1.0.5-macos.zip` to install the app, or `AntCloudNative-1.0.5-source.zip` to build it. Local packages are generated in `dist/`; published downloads are listed on the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases).
 
-The app targets the macOS major version of the build machine. The bundled Homebrew libraries do not guarantee compatibility with older macOS versions.
+The supplied **1.0.5 Mac build targets Apple Silicon and macOS 26 or newer**. Build from source on your target Mac for a different supported architecture or build environment. A locally built app targets the macOS major version on which it was built.
 
-## Build
+You need an AntCloud account with access to a Windows VM and a network connection suitable for streaming.
 
-If Apple developer tools are missing, run `xcode-select --install` and finish their installation first.
+## Install the Mac app
 
-Get the source from the [project repository](https://github.com/AshrafMd-1/antcloud-native-macos) or [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases). Version 1.0.4 is this source update; the previous published release is [v1.0.3](https://github.com/AshrafMd-1/antcloud-native-macos/releases/tag/v1.0.3).
+1. Extract `AntCloudNative-1.0.5-macos.zip`.
+2. Quit any running AntCloud Native app.
+3. Drag `AntCloudNative.app` into Applications, replacing the existing copy if updating.
+4. Open the app and check **Help → About** for version 1.0.5.
 
-Open Terminal in the source folder containing `Build-Mac.command`, then run:
+The app contains its runtime libraries. Homebrew, Qt and Python are build tools and are not needed to run the installed app. This is a locally signed app, not a notarized distribution.
+
+## Connect and play
+
+1. End any competing stream to the same VM.
+2. Sign in inside AntCloud Native. Enable remembered login if you want the token stored in Keychain.
+3. Choose **720p or 1080p** within your account limit, then Connect. The app handles startup, host discovery and pairing.
+4. Use **Control+Command+Shift+P** to open local controls. Resume returns to the stream; Stop stream returns to the app.
+5. To shut down the VM, save your Windows work and confirm **Shutdown VM**. Check the dashboard for the final power state. Reconnect when Connect becomes available.
+
+Windows copy/paste and similar shortcuts use **Command**. Option maps to Alt, and Control maps to the Windows key. See [README.md](README.md) for the full controls, settings and statistics reference.
+
+For connection testing, use **720p / 60 FPS / 6 Mbps / H.264**. Bitrate choices extend to **45 and 50 Mbps**; choose a rate your network and VM can sustain. **H.265 - Experimental** (HEVC), **AV1 - Experimental** and experimental 1440p/4K resolutions depend on VM and Mac support and may fail. Settings changes apply to the next connection.
+
+## Build from source
+
+Requirements: Apple command-line developer tools, Homebrew, Python 3.10 or newer, and compatible Qt 6.11+ modules. The builder installs missing Homebrew Qt modules and reuses those already installed.
+
+If the Apple tools are missing, run `xcode-select --install` and finish that installation first. Install Homebrew from [brew.sh](https://brew.sh/) if needed.
+
+Extract the source ZIP or clone the [repository](https://github.com/AshrafMd-1/antcloud-native-macos). From the folder containing `Build-Mac.command`, run:
 
 ```bash
 bash Build-Mac.command
-bash Open-App.command
 ```
 
-The builder verifies the downloaded streaming SDK, runs core tests, compiles the app, bundles runtime libraries, and checks its version and local signature. It writes **`dist/AntCloudNative.app`**, retaining one previous generated app. Avoid concurrent builds or Homebrew installations.
+The builder verifies the streaming SDK, runs core tests, compiles the complete app, bundles libraries and checks the local signature and version. The result is **`dist/AntCloudNative.app`**.
 
-## Install or update
+Open the generated app with `bash Open-App.command`. Check it before replacing a working copy in Applications. The builder retains one previous generated app and does not replace your installed copy. Avoid concurrent builds or Homebrew installations.
 
-1. Quit any running AntCloud Native app and end any active AntCloud browser stream.
-2. Open the generated app and check Help → About for the expected version. Test a connection, audio/video, Stop stream and reconnect before replacing a working installation.
-3. Quit the tested app and drag `dist/AntCloudNative.app` into Applications. For an update, replace the existing copy.
-
-The installed app contains its runtime libraries; Terminal can be closed. Preferences, pairing identity and remembered login remain in their existing per-user locations. Keychain may request access after a locally signed rebuild. No manual token copying is needed.
-
-## First connection
-
-Open AntCloud Native from Applications and sign in. Enable remembered login if desired. Choose **720p or 1080p**, within your account limit, then Connect; startup and pairing are handled inside the app.
-
-Press **Control+Command+Shift+P** to open local controls. Resume returns to the stream; Stop stream disconnects. Shutdown VM sends a request after confirmation—save Windows work first, then check the dashboard for the final power state. Reconnect when Connect becomes available.
-
-Use **720p / 60 FPS / 6 Mbps** when testing a connection problem. 1440p and 4K are experimental and may work inconsistently. H.264 is the default codec; H.265/HEVC and AV1 need compatible VM/Mac support. You can adjust FPS and choose a bitrate from 2–40 Mbps. Changes take effect on the next connection.
-
-Windows shortcuts now use **Command** for copy/paste and similar actions. Command maps to Windows Ctrl, Option to Alt, and Control to the Windows key. This replaces the modifier mapping in v1.0.3; other keys and local stream shortcuts stay the same. See [README.md](README.md) for all controls, settings and statistics.
+Updates retain preferences, pairing identity and remembered login. Keychain may request access after a locally signed rebuild. Check **Help → About** to confirm which copy is running.
 
 ## Troubleshooting
 
-- **Qt version mismatch:** upgrade `qtbase`, `qtdeclarative`, `qtsvg`, `qttools` and `qtwebsockets` together before rebuilding.
-- **Homebrew lock:** let the other install/build finish, then retry.
-- **Unfinished staged app:** follow the builder's message to rename `dist/AntCloudNative-new.app`, then retry.
-- **Connection issue:** check the AntCloud dashboard and end other active streams. Retry at 720p/60 FPS/6 Mbps. A new attempt clears the previous issue; a genuine new failure appears under Connection issue.
-- **Repeated failure:** use Help → Export diagnostic report. Share the redacted report, not preferences or Keychain contents.
+- **Connection failure:** check the AntCloud dashboard and competing sessions, then try the testing profile above. Export a diagnostic report if the failure repeats.
+- **Experimental setting fails:** reconnect using H.264 and 720p or 1080p. The host must support the chosen setting.
+- **Time left is unavailable:** the provider has not supplied a valid value. Use the dashboard to check the account balance.
+- **Qt mismatch:** upgrade `qtbase`, `qtdeclarative`, `qtsvg`, `qttools` and `qtwebsockets` together before rebuilding.
+- **Homebrew lock:** let the other installation/build finish, then retry.
+- **SDK or staged-app error:** follow the builder's specific rename/retry message; it will not silently replace an unexpected SDK or staged app.
 
-Run `bash Test.command` from the source folder for isolated local tests. The target-Mac checklist in [AGENTS.md](AGENTS.md#live-mac-checklist) covers native input, Keychain, pairing and shutdown/reconnect checks that fixtures cannot prove.
+Use **Help → Export diagnostic report** to save a redacted report. Share that report, not preferences or Keychain contents. Run `bash Test.command` from the source folder for isolated local checks; [AGENTS.md](AGENTS.md#target-mac-verification) describes live checks.
 
-## Reclaim build space
+## Clean up build files
 
-After checking the copy in Applications, you may delete this project's `build/`, `dist/` and `src/libs/mac/` folders. This does not affect the installed app; a future build recreates them. Keep the source if you plan to rebuild.
+After verifying the installed copy in Applications, you may delete this project's `build/`, `dist/` and `src/libs/mac/` folders. Future builds recreate them. Keep the source if you plan to rebuild.
 
-Use Sign out to remove the remembered token. Build-folder cleanup does not remove preferences, pairing identity or Keychain data. Homebrew and Apple developer tools are shared installations; remove them only if you no longer need them for other projects.
+Build-folder cleanup does not remove preferences, pairing identity or Keychain data. Use Sign out to remove remembered login. Homebrew and Apple developer tools are shared installations; remove them only if other projects no longer need them.
