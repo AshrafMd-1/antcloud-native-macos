@@ -1,0 +1,47 @@
+# Local builds and packaged apps
+/build/
+/dist/
+/src/libs/mac/
+/src/libs/windows/
+/src/libs/steamlink/
+/src/libs/linux/
+*.app/
+*.dSYM/
+
+# Qt Creator / qmake output
+*.pro.user
+*.pro.user.*
+.qmake.stash
+/src/app/Makefile
+/src/tests/antcloud/Makefile
+*.o
+*.obj
+*.moc
+moc_*.cpp
+ui_*.h
+*.ilk
+*.pdb
+
+# Local settings, credentials and diagnostics
+.env
+.env.*
+!.env.example
+.antcloud-session.json
+*.har
+*.jsonl
+*.log
+*.p12
+*.mobileprovision
+
+# Python tooling caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Desktop/editor clutter
+.DS_Store
+Thumbs.db
+*~
+.idea/
+.vscode/

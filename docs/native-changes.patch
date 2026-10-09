@@ -1,0 +1,3275 @@
+diff --git a/app/Info.plist b/app/Info.plist
+index 24980b7..931ec0f 100644
+--- a/app/Info.plist
++++ b/app/Info.plist
+@@ -13,7 +13,7 @@
+ 	<key>CFBundleIconFile</key>
+ 	<string>moonlight</string>
+ 	<key>CFBundleIdentifier</key>
+-	<string>com.moonlight-stream.Moonlight</string>
++	<string>day.ashraf.antcloud.native</string>
+ 	<key>NSHighResolutionCapable</key>
+ 	<true/>
+ 	<key>CFBundlePackageType</key>
+diff --git a/app/antcloud/controller.cpp b/app/antcloud/controller.cpp
+new file mode 100644
+index 0000000..e3a9414
+--- /dev/null
++++ b/app/antcloud/controller.cpp
+@@ -0,0 +1,229 @@
++#include "controller.h"
++#include "streambridge.h"
++#include "backend/computermanager.h"
++#include "backend/computerseeker.h"
++#include "settings/streamingpreferences.h"
++#include "streaming/session.h"
++#include <QSettings>
++#include <QSaveFile>
++#include <QReadLocker>
++
++namespace AntCloud {
++namespace {
++const QSize resolutions[] = {{1280,720}, {1920,1080}, {1440,900}, {2560,1440}, {3840,2160}};
++const int frameRates[] = {30,60,120};
++}
++Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new ProviderWorker) {
++    QSettings settings;
++    m_ResolutionIndex = qBound(0, settings.value("native/resolutionIndex", 0).toInt(), 4);
++    m_FpsIndex = qBound(0, settings.value("native/fpsIndex", 1).toInt(), 2);
++    m_Bitrate = qBound(2000, settings.value("native/bitrate", 6000).toInt(), 40000);
++    m_Fullscreen = settings.value("native/fullscreen", true).toBool();
++    m_RelativeMouse = settings.value("native/relativeMouse", true).toBool();
++    m_ShowStats = settings.value("native/showStats", true).toBool();
++    m_Worker->moveToThread(&m_Thread);
++    connect(&m_Thread, &QThread::started, m_Worker, &ProviderWorker::initialize);
++    connect(&m_Thread, &QThread::finished, m_Worker, &QObject::deleteLater);
++    connect(m_Worker, &ProviderWorker::account, this, [this](bool signedIn, int limit, const QString& message) {
++        m_SignedIn = signedIn; m_Limit = limit; m_Notice = message;
++        setStage("idle", signedIn ? "Your Windows VM is ready to connect." : "Sign in to connect to your Windows VM.");
++    });
++    connect(m_Worker, &ProviderWorker::authenticationFailed, this, [this](const QString& message) {
++        m_Error = message; setStage("idle", "Sign in to connect to your Windows VM.");
++    });
++    connect(m_Worker, &ProviderWorker::stage, this, [this](const QString& phase, const QString& detail) {
++        if (phase == "authenticating" || (m_Active && !m_Computer)) setStage(phase, detail);
++    });
++    connect(m_Worker, &ProviderWorker::hostAvailable, this, &Controller::findHost);
++    connect(m_Worker, &ProviderWorker::nativeReady, this, [this] { record("Provider confirmed native connection; video control sent."); });
++    connect(m_Worker, &ProviderWorker::ended, this, [this](const QString& message) {
++        m_ProviderActive = false; finish(message);
++    });
++    connect(m_Worker, &ProviderWorker::notice, this, [this](const QString& message) { m_Notice = message; record(message); emit changed(); });
++    connect(m_Worker, &ProviderWorker::shutdownRequested, this, [this] { record("Confirmed shutdown request sent once; final power state unverified."); });
++    m_ElapsedTimer.setInterval(1000);
++    connect(&m_ElapsedTimer, &QTimer::timeout, this, &Controller::changed);
++    m_AppTimeout.setSingleShot(true); m_AppTimeout.setInterval(30000);
++    connect(&m_AppTimeout, &QTimer::timeout, this, [this] { finish("The native host did not offer Desktop in time. Check the dashboard before retrying."); });
++    m_Thread.setObjectName("AntCloud provider"); m_Thread.start();
++    StreamBridge::install(m_Worker);
++}
++
++Controller::~Controller() {
++    StreamBridge::install(nullptr);
++    QMetaObject::invokeMethod(m_Worker, "stop", Qt::BlockingQueuedConnection);
++    m_Thread.quit(); m_Thread.wait();
++}
++
++void Controller::initialize(QQuickWindow* window) {
++    if (m_Window) return;
++    m_Window = window;
++    QMetaObject::invokeMethod(m_Worker, "restore", Qt::QueuedConnection);
++}
++
++void Controller::login(QString email, QString password, bool remember) {
++    if (busy()) return;
++    m_Error.clear(); m_Notice.clear(); setStage("authenticating", "Signing in to AntCloud…");
++    QMetaObject::invokeMethod(m_Worker, "login", Qt::QueuedConnection,
++        Q_ARG(QString, email), Q_ARG(QString, password), Q_ARG(bool, remember));
++    password.fill(QChar('\0'));
++}
++
++void Controller::signOut() {
++    if (busy()) return;
++    m_Error.clear(); m_Notice.clear();
++    setStage("authenticating", "Removing your saved login…");
++    QMetaObject::invokeMethod(m_Worker, "signOut", Qt::QueuedConnection);
++}
++
++void Controller::start() {
++    if (!m_SignedIn || busy() || !m_Window) return;
++    if (m_ResolutionIndex < 0 || m_ResolutionIndex > 4 || m_FpsIndex < 0 || m_FpsIndex > 2) return;
++    const QSize size = resolutions[m_ResolutionIndex];
++    StreamSettings spec{size.width(), size.height(), frameRates[m_FpsIndex], m_Bitrate};
++    if (!spec.isValid() || spec.preset() > m_Limit) {
++        m_Error = "Choose a resolution within your account’s limit and a bitrate from 2 to 40 Mbps."; emit changed(); return;
++    }
++    QSettings settings;
++    settings.setValue("native/resolutionIndex", m_ResolutionIndex); settings.setValue("native/fpsIndex", m_FpsIndex);
++    settings.setValue("native/bitrate", m_Bitrate); settings.setValue("native/fullscreen", m_Fullscreen);
++    settings.setValue("native/relativeMouse", m_RelativeMouse); settings.setValue("native/showStats", m_ShowStats);
++    m_Preferences = StreamingPreferences::get();
++    m_Preferences->width = spec.width; m_Preferences->height = spec.height; m_Preferences->fps = spec.fps;
++    m_Preferences->bitrateKbps = spec.bitrate;
++    m_Preferences->windowMode = m_Fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
++    m_Preferences->absoluteMouseMode = !m_RelativeMouse; m_Preferences->captureSysKeysMode = StreamingPreferences::CSK_ALWAYS;
++    m_Preferences->videoCodecConfig = StreamingPreferences::VCC_FORCE_H264; m_Preferences->enableHdr = false;
++    m_Preferences->gameOptimizations = false; m_Preferences->quitAppAfter = false;
++    m_Preferences->showPerformanceOverlay = m_ShowStats; m_Preferences->richPresence = false; m_Preferences->enableMdns = false;
++    m_Active = true; m_ProviderActive = true; m_Computer = nullptr; m_Error.clear(); m_Notice.clear();
++    m_Clock.start(); m_ElapsedTimer.start(); setStage("connecting", "Opening your provider session…");
++    StreamBridge::setHostRequestsAllowed(true);
++    record(QString("Requested %1×%2, %3 FPS, %4 Kbps; provider preset %5.").arg(spec.width).arg(spec.height).arg(spec.fps).arg(spec.bitrate).arg(spec.preset()));
++    QMetaObject::invokeMethod(m_Worker, "start", Qt::QueuedConnection, Q_ARG(int, spec.width), Q_ARG(int, spec.height), Q_ARG(int, spec.fps), Q_ARG(int, spec.bitrate));
++}
++
++void Controller::findHost(const QString& address) {
++    if (!m_Active) return;
++    setStage("host", "Native host found. Checking this Mac’s pairing…");
++    if (!m_Manager) {
++        m_Manager = new ComputerManager(m_Preferences); m_Manager->setParent(this);
++        connect(m_Manager, &ComputerManager::pairingCompleted, this, [this](NvComputer* computer, const QString& error) {
++            if (computer != m_Computer || !m_Pairing) return;
++            m_Pairing = false;
++            if (!m_Active) { setStage("idle", "Disconnected. You can connect again."); return; }
++            if (!error.isEmpty()) { finish("Native pairing did not complete. Check the dashboard before retrying."); return; }
++            record("Native pairing completed; certificate pinned.");
++            setStage("launching", "Paired. Finding the Windows desktop…");
++            m_AppTimeout.start(); launchIfReady();
++        });
++        connect(m_Manager, &ComputerManager::computerStateChanged, this, [this](NvComputer* computer) {
++            if (m_Active && computer == m_Computer && !m_Pairing) launchIfReady();
++        });
++    }
++    m_Manager->startPolling(); m_Polling = true;
++    m_Seeker = new ComputerSeeker(m_Manager, address, this);
++    connect(m_Seeker, &ComputerSeeker::computerFound, this, &Controller::hostFound);
++    connect(m_Seeker, &ComputerSeeker::errorTimeout, this, [this] { finish("Could not reach the native streaming host. Check the dashboard and your connection."); });
++    m_Seeker->start(30000);
++}
++
++void Controller::hostFound(NvComputer* computer) {
++    if (!m_Active) return;
++    m_Computer = computer; m_Seeker->deleteLater(); m_Seeker = nullptr;
++    bool paired;
++    { QReadLocker lock(&computer->lock); paired = computer->pairState == NvComputer::PS_PAIRED; }
++    if (paired) { m_AppTimeout.start(); setStage("launching", "This Mac is paired. Finding the Windows desktop…"); launchIfReady(); }
++    else {
++        m_Pairing = true;
++        setStage("pairing", "Pairing this Mac with your VM. No PIN entry is needed.");
++        m_Manager->pairHost(computer, m_Manager->generatePinString());
++    }
++}
++
++void Controller::launchIfReady() {
++    if (!m_Active || !m_Computer || m_Pairing || m_Session) return;
++    NvApp desktop;
++    bool found = false, otherApp = false;
++    {
++        QReadLocker lock(&m_Computer->lock);
++        for (const auto& app : m_Computer->appList) {
++            if (app.name.compare("Desktop", Qt::CaseInsensitive) == 0) { desktop = app; found = true; break; }
++        }
++        otherApp = found && m_Computer->currentGameId != 0 && m_Computer->currentGameId != desktop.id;
++    }
++    if (!found) return;
++    if (otherApp) { finish("Another host application is running. Stop that stream in the dashboard before connecting Desktop; it was not force-quit."); return; }
++    m_AppTimeout.stop(); stopPolling();
++    m_Session = new Session(m_Computer, desktop, m_Preferences);
++    QQmlEngine::setObjectOwnership(m_Session, QQmlEngine::CppOwnership);
++    connect(m_Session, &Session::stageStarting, this, [this](const QString&) { setStage("video", "Starting the encrypted video and audio connection…"); });
++    connect(m_Session, &Session::stageFailed, this, [this](const QString&, int code, const QString&) {
++        m_Error = QString("Native streaming failed (error %1). Export diagnostics and check the dashboard.").arg(code); record(m_Error); emit changed();
++    });
++    connect(m_Session, &Session::displayLaunchError, this, [this](const QString&) {
++        m_Error = "The native stream could not start. Check your settings and the dashboard."; record(m_Error); emit changed();
++    });
++    connect(m_Session, &Session::connectionStarted, this, [this] {
++        setStage("connected", "Video connected. Use Control + Command + Shift + P for local controls.");
++        if (m_Window) m_Window->hide();
++    });
++    connect(m_Session, &Session::sessionFinished, this, [this](int) {
++        StreamBridge::setActive(false);
++        if (m_Window) { m_Window->show(); m_Window->requestActivate(); }
++        QMetaObject::invokeMethod(m_Worker, "stopAfterStream", Qt::QueuedConnection);
++        m_Active = false; m_ElapsedTimer.stop();
++        setStage("idle", "Stream disconnected. The provider may apply its idle shutdown policy.");
++    });
++    connect(m_Session, &Session::readyForDeletion, this, [this] {
++        if (m_Session) m_Session->deleteLater();
++        m_Session = nullptr; emit changed();
++    });
++    setStage("video", "Preparing the native decoder and input capture…");
++    if (!m_Session->initialize(m_Window)) {
++        m_Session->deleteLater(); m_Session = nullptr;
++        finish("The native decoder or display could not be initialized. Check the stream settings."); return;
++    }
++    if (!m_Active) {
++        m_Session->deleteLater(); m_Session = nullptr; emit changed(); return;
++    }
++    if (!m_Session->property("launchWarnings").toStringList().isEmpty())
++        m_Notice = "The streaming engine reported a configuration warning. If video or input fails, try 720p / 60 FPS.";
++    StreamBridge::setActive(true);
++    m_Session->start();
++}
++
++void Controller::finish(const QString& message) {
++    if (!message.isEmpty()) { m_Error = message; record(message); }
++    m_Active = false; m_ElapsedTimer.stop(); m_AppTimeout.stop();
++    if (m_Seeker) { delete m_Seeker; m_Seeker = nullptr; }
++    stopPolling();
++    QMetaObject::invokeMethod(m_Worker, "stop", Qt::QueuedConnection);
++    if (m_Session) m_Session->interrupt();
++    setStage(m_Pairing ? "cancelling" : "idle", m_Pairing ? "Disconnecting. Waiting for the pairing request to finish…" : "Disconnected. Check the dashboard before starting another session.");
++}
++
++void Controller::disconnectStream() { if (m_Active) finish({}); }
++void Controller::shutdown() { if (m_Active) QMetaObject::invokeMethod(m_Worker, "shutdown", Qt::QueuedConnection); }
++void Controller::stopPolling() { if (m_Polling) { m_Manager->stopPollingAsync(); m_Polling = false; } }
++
++void Controller::setStage(const QString& phase, const QString& detail) {
++    if (phase != m_Phase || detail != m_Detail) record(phase + ": " + detail);
++    m_Phase = phase; m_Detail = detail; emit changed();
++}
++void Controller::record(const QString& value) {
++    // Fixed local messages only. No account responses, host addresses or decoder dumps.
++    m_Diagnostics.append(QString("%1s %2").arg(elapsed()).arg(value.left(512)));
++    while (m_Diagnostics.size() > 64) m_Diagnostics.removeFirst();
++}
++void Controller::clearDiagnostics() { m_Diagnostics.clear(); m_Notice = "Diagnostic history cleared."; emit changed(); }
++void Controller::exportDiagnostics(QUrl url) {
++    if (!url.isLocalFile()) return;
++    QSaveFile file(url.toLocalFile()); file.setDirectWriteFallback(false);
++    if (!file.open(QIODevice::WriteOnly)) { m_Notice = "Could not write the diagnostic report."; emit changed(); return; }
++    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
++    const QByteArray bytes = ("AntCloud Native — redacted session summary\nNo raw account or transport payloads are recorded.\n\n" + m_Diagnostics.join('\n') + '\n').toUtf8();
++    m_Notice = file.write(bytes) == bytes.size() && file.commit() ? "Diagnostic report exported." : "Could not write the diagnostic report.";
++    emit changed();
++}
++}
+diff --git a/app/antcloud/controller.h b/app/antcloud/controller.h
+new file mode 100644
+index 0000000..d1f4240
+--- /dev/null
++++ b/app/antcloud/controller.h
+@@ -0,0 +1,79 @@
++#pragma once
++#include "providerworker.h"
++#include <QThread>
++#include <QElapsedTimer>
++#include <QPointer>
++#include <QQuickWindow>
++
++class ComputerManager;
++class ComputerSeeker;
++class NvComputer;
++class Session;
++class StreamingPreferences;
++
++namespace AntCloud {
++class Controller : public QObject {
++    Q_OBJECT
++    Q_PROPERTY(bool signedIn READ signedIn NOTIFY changed)
++    Q_PROPERTY(bool active READ active NOTIFY changed)
++    Q_PROPERTY(bool busy READ busy NOTIFY changed)
++    Q_PROPERTY(QString phase READ phase NOTIFY changed)
++    Q_PROPERTY(QString detail READ detail NOTIFY changed)
++    Q_PROPERTY(QString error READ error NOTIFY changed)
++    Q_PROPERTY(QString notice READ notice NOTIFY changed)
++    Q_PROPERTY(int elapsed READ elapsed NOTIFY changed)
++    Q_PROPERTY(int resolutionLimit READ resolutionLimit NOTIFY changed)
++    Q_PROPERTY(int resolutionIndex MEMBER m_ResolutionIndex NOTIFY settingsChanged)
++    Q_PROPERTY(int fpsIndex MEMBER m_FpsIndex NOTIFY settingsChanged)
++    Q_PROPERTY(int bitrate MEMBER m_Bitrate NOTIFY settingsChanged)
++    Q_PROPERTY(bool fullscreen MEMBER m_Fullscreen NOTIFY settingsChanged)
++    Q_PROPERTY(bool relativeMouse MEMBER m_RelativeMouse NOTIFY settingsChanged)
++    Q_PROPERTY(bool showStats MEMBER m_ShowStats NOTIFY settingsChanged)
++public:
++    explicit Controller(QObject* parent = nullptr);
++    ~Controller() override;
++    bool signedIn() const { return m_SignedIn; }
++    bool active() const { return m_Active; }
++    bool busy() const { return m_Active || m_ProviderActive || m_Pairing || !m_Session.isNull() || m_Phase == "authenticating"; }
++    QString phase() const { return m_Phase; }
++    QString detail() const { return m_Detail; }
++    QString error() const { return m_Error; }
++    QString notice() const { return m_Notice; }
++    int elapsed() const { return m_Clock.isValid() ? int(m_Clock.elapsed() / 1000) : 0; }
++    int resolutionLimit() const { return m_Limit; }
++    Q_INVOKABLE void initialize(QQuickWindow* window);
++    Q_INVOKABLE void login(QString email, QString password, bool remember);
++    Q_INVOKABLE void signOut();
++    Q_INVOKABLE void start();
++    Q_INVOKABLE void disconnectStream();
++    Q_INVOKABLE void shutdown();
++    Q_INVOKABLE void exportDiagnostics(QUrl file);
++    Q_INVOKABLE void clearDiagnostics();
++signals:
++    void changed();
++    void settingsChanged();
++private:
++    void setStage(const QString& phase, const QString& detail);
++    void findHost(const QString& address);
++    void hostFound(NvComputer* computer);
++    void launchIfReady();
++    void finish(const QString& message);
++    void stopPolling();
++    void record(const QString& value);
++    QThread m_Thread;
++    ProviderWorker* m_Worker;
++    ComputerManager* m_Manager = nullptr;
++    QPointer<ComputerSeeker> m_Seeker;
++    QPointer<Session> m_Session;
++    QPointer<QQuickWindow> m_Window;
++    StreamingPreferences* m_Preferences = nullptr;
++    NvComputer* m_Computer = nullptr;
++    bool m_SignedIn = false, m_Active = false, m_ProviderActive = false, m_Pairing = false, m_Polling = false;
++    bool m_Fullscreen = true, m_RelativeMouse = true, m_ShowStats = true;
++    int m_Limit = 0, m_ResolutionIndex = 0, m_FpsIndex = 1, m_Bitrate = 6000;
++    QString m_Phase = "idle", m_Detail = "Sign in to connect to your Windows VM.", m_Error, m_Notice;
++    QStringList m_Diagnostics;
++    QElapsedTimer m_Clock;
++    QTimer m_ElapsedTimer, m_AppTimeout;
++};
++}
+diff --git a/app/antcloud/protocol.h b/app/antcloud/protocol.h
+new file mode 100644
+index 0000000..e9d3d5f
+--- /dev/null
++++ b/app/antcloud/protocol.h
+@@ -0,0 +1,91 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++#pragma once
++#include <QHostAddress>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QRegularExpression>
++
++namespace AntCloud {
++inline bool validToken(const QString& token) {
++    static const QRegularExpression pattern("^[A-Za-z0-9_.~+/=-]{1,16384}$");
++    return pattern.match(token).hasMatch();
++}
++inline int accountLimit(const QJsonObject& response) {
++    const auto user = response.value("user").toObject();
++    if (!user.value("currentPlan").isString() || user.value("currentPlan").toString().isEmpty()
++        || !user.value("resolution").isString()) return 0;
++    const QString value = user.value("resolution").toString();
++    return value == "720" || value == "1080" || value == "1440" || value == "2160" ? value.toInt() : 0;
++}
++inline bool connected(const QJsonObject& value) {
++    return value.value("connected").isBool() && value.value("connected").toBool();
++}
++inline bool pinAccepted(const QJsonObject& value) {
++    const auto result = value.value("data").toObject().value("status");
++    return value.value("message").toString() == "success" && result.isBool() && result.toBool();
++}
++inline QString vmAddress(const QJsonObject& value) {
++    if (!value.value("vmip").isString()) return {};
++    QHostAddress address;
++    if (!address.setAddress(value.value("vmip").toString().trimmed()) || address.isNull()
++        || address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6
++        || address.isLoopback() || address.isMulticast()) return {};
++    return address.toString();
++}
++struct StreamSettings {
++    int width = 1280, height = 720, fps = 60, bitrate = 6000;
++    int preset() const {
++        if (width == 1280 && height == 720) return 720;
++        if ((width == 1920 && height == 1080) || (width == 1440 && height == 900)) return 1080;
++        if (width == 2560 && height == 1440) return 1440;
++        if (width == 3840 && height == 2160) return 2160;
++        return 0;
++    }
++    bool isValid() const {
++        return preset() && (fps == 30 || fps == 60 || fps == 120) && bitrate >= 2000 && bitrate <= 40000;
++    }
++    QString providerSpec() const {
++        return QString("%1 %2 %3 10").arg(preset()).arg(bitrate).arg(fps);
++    }
++};
++struct Frame {
++    enum Kind { Invalid, Hello, Ping, NamespaceReady, Event, Closed, NamespaceError, Ignored } kind = Invalid;
++    QString name, ackId;
++    QJsonValue value;
++    int heartbeatMs = 0;
++};
++inline Frame parseFrame(const QString& packet) {
++    Frame frame;
++    if (packet.size() > 65536) return frame;
++    if (packet == "2") { frame.kind = Frame::Ping; return frame; }
++    if (packet == "1" || packet.startsWith("41")) { frame.kind = Frame::Closed; return frame; }
++    if (packet.startsWith("44")) { frame.kind = Frame::NamespaceError; return frame; }
++    if (packet == "40" || packet.startsWith("40{")) { frame.kind = Frame::NamespaceReady; return frame; }
++    if (packet.startsWith('0')) {
++        const auto data = QJsonDocument::fromJson(packet.mid(1).toUtf8()).object();
++        const auto interval = data.value("pingInterval"), timeout = data.value("pingTimeout");
++        if (!interval.isDouble() || !timeout.isDouble() || interval.toDouble() < 1000
++            || interval.toDouble() > 120000 || timeout.toDouble() < 1000 || timeout.toDouble() > 120000) return frame;
++        frame.kind = Frame::Hello;
++        frame.heartbeatMs = interval.toInt() + timeout.toInt();
++        return frame;
++    }
++    if (!packet.startsWith("42")) { frame.kind = Frame::Ignored; return frame; }
++    int pos = 2;
++    while (pos < packet.size() && packet[pos].isDigit()) ++pos;
++    frame.ackId = packet.mid(2, pos - 2);
++    const auto doc = QJsonDocument::fromJson(packet.mid(pos).toUtf8());
++    if (!doc.isArray()) return frame;
++    const auto values = doc.array();
++    if (values.isEmpty() || !values[0].isString() || values[0].toString().size() > 80) return frame;
++    frame.kind = Frame::Event; frame.name = values[0].toString();
++    if (values.size() > 1) frame.value = values[1];
++    return frame;
++}
++inline QString eventPacket(const QString& name, const QJsonValue& value = QJsonValue(QJsonValue::Undefined)) {
++    QJsonArray values{name};
++    if (!value.isUndefined()) values.append(value);
++    return "42" + QString::fromUtf8(QJsonDocument(values).toJson(QJsonDocument::Compact));
++}
++}
+diff --git a/app/antcloud/providerworker.cpp b/app/antcloud/providerworker.cpp
+new file mode 100644
+index 0000000..a87ada4
+--- /dev/null
++++ b/app/antcloud/providerworker.cpp
+@@ -0,0 +1,290 @@
++#include "providerworker.h"
++#include "tokenstore.h"
++#include "streambridge.h"
++#include <QUrlQuery>
++#include <QThread>
++
++namespace AntCloud {
++ProviderWorker::ProviderWorker(QObject* parent) : QObject(parent) {}
++
++void ProviderWorker::initialize() {
++    Q_ASSERT(QThread::currentThread() == thread());
++    m_Network = new QNetworkAccessManager(this);
++    m_Poll = new QTimer(this); m_Poll->setInterval(2000);
++    m_Startup = new QTimer(this); m_Startup->setSingleShot(true); m_Startup->setInterval(300000);
++    m_Heartbeat = new QTimer(this); m_Heartbeat->setSingleShot(true);
++    connect(m_Poll, &QTimer::timeout, this, &ProviderWorker::poll);
++    connect(m_Startup, &QTimer::timeout, this, [this] { finish("The VM did not connect within five minutes. Check the AntCloud dashboard before retrying."); });
++    connect(m_Heartbeat, &QTimer::timeout, this, [this] { finish("The provider connection stopped responding. Your stream has been disconnected."); });
++}
++
++void ProviderWorker::request(const QString& path, const QJsonObject& body, bool post, bool session, Reply callback) {
++    const int generation = session ? m_Generation : m_AuthGeneration;
++#ifdef ANTCLOUD_TESTING
++    const QUrl url(m_Api.toString() + path);
++#else
++    const QUrl url("https://api.antcloud.co" + path);
++#endif
++    QNetworkRequest request(url);
++    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
++    request.setTransferTimeout(20000);
++    request.setRawHeader("Accept", "application/json");
++    if (!m_Token.isEmpty()) request.setRawHeader("Authorization", "JWT " + m_Token.toUtf8());
++    QByteArray payload;
++    if (post) {
++        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++        payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
++    }
++    auto reply = post ? m_Network->post(request, payload) : m_Network->get(request);
++    payload.fill('\0'); // Best effort; Qt owns its request buffer until completion.
++    reply->setProperty("session", session);
++    reply->setReadBufferSize(1024 * 1024 + 1);
++    m_Requests.insert(reply);
++    connect(reply, &QNetworkReply::readyRead, this, [reply] {
++        if (reply->bytesAvailable() > 1024 * 1024) reply->abort();
++    });
++    connect(reply, &QNetworkReply::finished, this, [this, reply, session, generation, callback] {
++        m_Requests.remove(reply);
++        reply->deleteLater();
++        if (generation != (session ? m_Generation : m_AuthGeneration)) return;
++        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++        const auto bytes = reply->read(1024 * 1024 + 1);
++        QJsonParseError error;
++        const auto doc = QJsonDocument::fromJson(bytes, &error);
++        if (bytes.size() > 1024 * 1024 || error.error != QJsonParseError::NoError || !doc.isObject()) {
++            callback(status >= 400 ? status : 0, {}); return;
++        }
++        callback(status, doc.object());
++    });
++}
++
++void ProviderWorker::restore() {
++    QString error;
++    const QString token = TokenStore::load(error);
++    if (token.isEmpty()) { emit account(false, 0, error); return; }
++    emit stage("authenticating", "Checking your saved login…");
++    authenticateToken(token);
++}
++
++void ProviderWorker::authenticateToken(const QString& token) {
++    ++m_AuthGeneration; clearRequests(false); m_Token = token;
++    request("/api/users/me", {}, false, false, [this, token](int status, const QJsonObject& value) {
++        if (status == 401) {
++            QString error; TokenStore::clear(error); m_Token.clear();
++            emit account(false, 0, error);
++            emit authenticationFailed("Your saved login was rejected. Please sign in again.");
++        } else if (status != 200 || !accountLimit(value)) {
++            m_Token.clear(); emit account(false, 0, {});
++            emit authenticationFailed("Could not validate the saved login. Check your connection and sign in; the saved token was kept.");
++        } else { acceptAccount(value, token, false); }
++    });
++}
++
++void ProviderWorker::login(QString email, QString password, bool remember) {
++    if (m_Active) return;
++    if (email.trimmed().isEmpty() || email.size() > 320 || password.isEmpty() || password.size() > 4096) {
++        emit authenticationFailed("Enter your AntCloud email and password."); return;
++    }
++    ++m_AuthGeneration; clearRequests(false); m_Token.clear();
++    emit stage("authenticating", "Signing in to AntCloud…");
++    request("/api/users/login", {{"email", email.trimmed()}, {"password", password}}, true, false,
++        [this, remember](int status, const QJsonObject& value) {
++        if (status < 200 || status >= 300) {
++            emit authenticationFailed(status == 400 || status == 401 ? "Sign-in was rejected. Check your email and password." : "Could not sign in. Check your connection and try again.");
++            return;
++        }
++        const QString token = value.value("token").toString();
++        if (!validToken(token) || !accountLimit(value)) {
++            emit authenticationFailed("AntCloud returned unexpected account details. This does not mean the password was wrong."); return;
++        }
++        if (!remember) {
++            QString error; TokenStore::clear(error);
++            if (!error.isEmpty()) emit notice(error);
++        }
++        acceptAccount(value, token, remember);
++    });
++    password.fill(QChar('\0'));
++}
++
++void ProviderWorker::acceptAccount(const QJsonObject& value, const QString& token, bool remember) {
++    m_Token = token; m_Limit = accountLimit(value);
++    QString message;
++    if (remember) TokenStore::save(token, message);
++    emit account(true, m_Limit, message);
++}
++
++void ProviderWorker::signOut() {
++    stop(); ++m_AuthGeneration; clearRequests(false); m_Token.clear(); m_Limit = 0;
++    QString error; TokenStore::clear(error); emit account(false, 0, error);
++}
++
++void ProviderWorker::start(int width, int height, int fps, int bitrate) {
++    if (m_Active) return;
++    m_Settings = {width, height, fps, bitrate};
++    if (!validToken(m_Token) || !m_Settings.isValid() || m_Settings.preset() > m_Limit) {
++        emit ended("Choose supported stream settings within your account’s resolution limit."); return;
++    }
++    m_Active = true; ++m_Generation; m_Ready = false; m_Shutdown = false;
++    m_PinSubmitted = false;
++    m_Polling = false; m_RequestPending = false; m_Namespace = false; m_Address.clear();
++    emit stage("connecting", "Opening your provider session…");
++    // Recreate the socket so a previous connection cannot deliver events into a new session.
++    if (m_Socket) { m_Socket->disconnect(this); delete m_Socket; }
++    m_Socket = new QWebSocket(QStringLiteral("https://antcloud.co"), QWebSocketProtocol::VersionLatest, this);
++    m_Socket->setMaxAllowedIncomingMessageSize(65536);
++    m_Socket->setMaxAllowedIncomingFrameSize(65536);
++    m_Socket->setReadBufferSize(65536);
++    connect(m_Socket, &QWebSocket::textMessageReceived, this, &ProviderWorker::receive);
++    connect(m_Socket, &QWebSocket::disconnected, this, [this] { if (m_Active) finish("The provider session ended. Check the dashboard before reconnecting."); });
++    #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
++    connect(m_Socket, &QWebSocket::errorOccurred, this,
++#else
++    connect(m_Socket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this,
++#endif
++        [this](QAbstractSocket::SocketError) { if (m_Active) finish("Could not keep the provider connection open. Check your connection and the dashboard."); });
++#ifdef ANTCLOUD_TESTING
++    QUrl url(m_Stream);
++#else
++    QUrl url("wss://socket.antcloud.co:8000/socket.io/");
++#endif
++    QUrlQuery query;
++    query.addQueryItem("EIO", "4"); query.addQueryItem("transport", "websocket");
++    query.addQueryItem("type", "client"); query.addQueryItem("game", "desktop");
++    query.addQueryItem("token", m_Token); query.addQueryItem("connection", "mobile");
++    query.addQueryItem("stream", m_Settings.providerSpec()); url.setQuery(query);
++    m_Socket->open(url);
++    m_HeartbeatMs = 45000; m_Heartbeat->start(m_HeartbeatMs); m_Startup->start();
++}
++
++bool ProviderWorker::send(const QString& packet) {
++    return m_Active && m_Socket && m_Socket->state() == QAbstractSocket::ConnectedState
++        && m_Socket->sendTextMessage(packet) == packet.toUtf8().size();
++}
++
++void ProviderWorker::receive(const QString& packet) {
++    if (!m_Active) return;
++    const Frame frame = parseFrame(packet);
++    switch (frame.kind) {
++    case Frame::Hello:
++        m_HeartbeatMs = frame.heartbeatMs;
++        m_Heartbeat->start(m_HeartbeatMs);
++        if (!send("40")) finish("Could not join the provider session.");
++        return;
++    case Frame::Ping:
++        m_Heartbeat->start(m_HeartbeatMs);
++        if (!send("3")) finish("The provider heartbeat could not be sent.");
++        return;
++    case Frame::NamespaceReady:
++        m_Namespace = true; emit stage("booting", "Waiting for the VM to boot. This can take a minute or two."); return;
++    case Frame::Closed: case Frame::NamespaceError:
++        finish("The provider ended or rejected this session. Check the dashboard."); return;
++    case Frame::Invalid:
++        finish("The provider sent an unsupported message. Export diagnostics before retrying."); return;
++    case Frame::Ignored: return;
++    case Frame::Event: break;
++    }
++    if (!m_Namespace) return;
++    if (!frame.ackId.isEmpty()) send("43" + frame.ackId + "[]");
++    if (frame.name == "inactive" || frame.name == "reset" || frame.name == "gamequit") {
++        finish(frame.value == "videonotstarting" ? "The provider ended the session because video did not start. Check the dashboard, then retry." : "The provider ended the session. Check the dashboard for the VM state.");
++    } else if (frame.name == "status") {
++        const QString status = frame.value.isString() ? frame.value.toString() : frame.value.toObject().value("status").toString();
++        if (status == "starting" || status == "waiting") emit stage("booting", "Waiting for the VM to boot. This can take a minute or two.");
++        else if (status == "done") emit stage("host", "The VM has booted. Waiting for its native streaming host…");
++    } else if (frame.name == "new_connection") {
++        const auto clients = frame.value.toObject().value("clients");
++        if (clients.isDouble() && clients.toDouble() >= 2 && !m_Polling) {
++            m_Polling = true; m_Poll->start(); poll();
++        }
++    }
++}
++
++void ProviderWorker::poll() {
++    if (!m_Active || !m_Namespace || m_Ready || m_RequestPending) return;
++    m_RequestPending = true;
++    if (m_Address.isEmpty()) {
++        request("/api/vm/getVmIp", {}, false, true, [this](int status, const QJsonObject& value) {
++            m_RequestPending = false;
++            if (status == 200) {
++                m_Address = vmAddress(value);
++                if (m_Address.isEmpty()) { finish("VM lookup returned an unsupported address."); return; }
++                emit stage("host", "Native host found. Connecting this Mac…");
++                emit hostAvailable(m_Address);
++                checkConnection();
++            } else if (status != 0 && status != 400 && status != 408 && status != 429 && status < 500) {
++                finish("AntCloud rejected the VM lookup. Check your account and dashboard.");
++            }
++        });
++    } else { checkConnection(); }
++}
++
++void ProviderWorker::checkConnection() {
++    if (!m_Active || m_Ready) return;
++    m_RequestPending = true;
++    request("/api/vm/checkConnectionStatus", {}, false, true, [this](int status, const QJsonObject& value) {
++        m_RequestPending = false;
++        if (status == 200 && connected(value)) {
++            m_RequestPending = true;
++            request("/api/vm/getVmIp", {}, false, true, [this](int status, const QJsonObject& value) {
++                m_RequestPending = false;
++                if (status != 200 || vmAddress(value) != m_Address) {
++                    finish("The VM address could not be revalidated. Check the dashboard before restarting the stream."); return;
++                }
++                if (!send(eventPacket("control", "video"))) { finish("Could not send the provider’s video-start control."); return; }
++                m_Ready = true; m_Poll->stop(); m_Startup->stop(); emit nativeReady();
++            });
++        } else if (status == 200 && !value.value("connected").isBool()) {
++            finish("The native readiness response had an unexpected format.");
++        } else if (status != 0 && status != 400 && status != 408 && status != 429 && status < 500) {
++            finish("AntCloud rejected native readiness. Check your account and dashboard.");
++        }
++        // HTTP 400 is pending, never success. The native client is already launching.
++    });
++}
++
++void ProviderWorker::pair(QString pin) {
++    static const QRegularExpression pattern("^[0-9]{4}$");
++    if (!m_Active || m_Address.isEmpty() || m_PinSubmitted || !pattern.match(pin).hasMatch()) return;
++    m_PinSubmitted = true;
++    request("/api/vm/vmauth", {{"pin", pin}}, true, true, [this](int status, const QJsonObject& value) {
++        if (status != 200 || !pinAccepted(value)) finish("The pairing PIN was not confirmed. Check the dashboard before retrying; it will not be submitted again automatically.");
++    });
++}
++
++void ProviderWorker::clearRequests(bool sessionOnly) {
++    const auto requests = m_Requests;
++    for (auto reply : requests) {
++        if (!sessionOnly || reply->property("session").toBool()) reply->abort();
++    }
++}
++
++void ProviderWorker::finish(const QString& message) {
++    if (!m_Active) return;
++    m_Active = false; ++m_Generation;
++    StreamBridge::setHostRequestsAllowed(false);
++    m_Poll->stop(); m_Startup->stop(); m_Heartbeat->stop();
++    clearRequests(true); m_RequestPending = false; m_Polling = false; m_Namespace = false;
++    if (m_Socket) m_Socket->close();
++    StreamBridge::interrupt(); emit ended(message);
++}
++
++void ProviderWorker::stop() { finish({}); }
++void ProviderWorker::stopAfterStream() { if (!m_Shutdown) stop(); }
++
++void ProviderWorker::shutdown() {
++    if (m_Shutdown) return;
++    if (!m_Active || !m_Namespace) {
++        emit notice("Shutdown could not be sent because the provider connection is not active. Check the dashboard.");
++        return;
++    }
++    m_Shutdown = true;
++    // Send once. Socket write acceptance is not a confirmed VM power state.
++    if (!send(eventPacket("closestream"))) {
++        finish("The shutdown request could not be sent. Check the dashboard; it was not retried."); return;
++    }
++    emit shutdownRequested();
++    emit notice("Shutdown requested. Check the AntCloud dashboard for the final VM power state.");
++    const int generation = m_Generation;
++    QTimer::singleShot(1000, this, [this, generation] { if (generation == m_Generation) finish({}); });
++}
++}
+diff --git a/app/antcloud/providerworker.h b/app/antcloud/providerworker.h
+new file mode 100644
+index 0000000..7419db9
+--- /dev/null
++++ b/app/antcloud/providerworker.h
+@@ -0,0 +1,62 @@
++// All provider network objects and timers live on this worker's own QThread.
++#pragma once
++#include "protocol.h"
++#include <QObject>
++#include <QNetworkAccessManager>
++#include <QNetworkReply>
++#include <QSet>
++#include <QTimer>
++#include <QWebSocket>
++#include <functional>
++
++namespace AntCloud {
++class ProviderWorker : public QObject {
++    Q_OBJECT
++public:
++    explicit ProviderWorker(QObject* parent = nullptr);
++public slots:
++    void initialize();
++    void restore();
++    void login(QString email, QString password, bool remember);
++    void signOut();
++    void start(int width, int height, int fps, int bitrate);
++    void pair(QString pin);
++    void stop();
++    void stopAfterStream();
++    void shutdown();
++signals:
++    void account(bool signedIn, int limit, QString notice);
++    void authenticationFailed(QString message);
++    void stage(QString name, QString detail);
++    void hostAvailable(QString address);
++    void nativeReady();
++    void ended(QString message);
++    void notice(QString message);
++    void shutdownRequested();
++private:
++    using Reply = std::function<void(int, QJsonObject)>;
++    void request(const QString& path, const QJsonObject& body, bool post, bool session, Reply callback);
++    void authenticateToken(const QString& token);
++    void acceptAccount(const QJsonObject& value, const QString& token, bool remember);
++    void receive(const QString& packet);
++    void poll();
++    void checkConnection();
++    void finish(const QString& message);
++    bool send(const QString& packet);
++    void clearRequests(bool sessionOnly);
++    QNetworkAccessManager* m_Network = nullptr;
++    QWebSocket* m_Socket = nullptr;
++    QTimer *m_Poll = nullptr, *m_Startup = nullptr, *m_Heartbeat = nullptr;
++    QSet<QNetworkReply*> m_Requests;
++    QString m_Token, m_Address;
++    int m_Limit = 0, m_Generation = 0, m_AuthGeneration = 0, m_HeartbeatMs = 45000;
++    bool m_Active = false, m_Namespace = false, m_Polling = false, m_RequestPending = false;
++    bool m_Ready = false, m_Shutdown = false, m_PinSubmitted = false;
++    StreamSettings m_Settings;
++#ifdef ANTCLOUD_TESTING
++    friend class ProviderWorkerTest;
++    QUrl m_Api = QUrl("https://api.antcloud.co");
++    QUrl m_Stream = QUrl("wss://socket.antcloud.co:8000/socket.io/");
++#endif
++};
++}
+diff --git a/app/antcloud/streambridge.h b/app/antcloud/streambridge.h
+new file mode 100644
+index 0000000..afb6d5a
+--- /dev/null
++++ b/app/antcloud/streambridge.h
+@@ -0,0 +1,39 @@
++// Process-local control channel. Account tokens and passwords stay on the worker.
++#pragma once
++#include <QObject>
++#include <QMutex>
++#include <QMutexLocker>
++#include <atomic>
++#include "SDL_compat.h"
++
++namespace AntCloud {
++class StreamBridge {
++public:
++    static void install(QObject* worker) { QMutexLocker lock(&mutex()); target() = worker; enabledFlag() = worker != nullptr; }
++    static bool enabled() { return enabledFlag().load(); }
++    static void setHostRequestsAllowed(bool value) { allowedFlag() = value; }
++    static void setClosing() { closingFlag() = true; }
++    static bool hostRequestsAllowed() { return !closingFlag().load() && (!enabled() || allowedFlag().load()); }
++    static bool shutdown() {
++        QMutexLocker lock(&mutex());
++        return target() && QMetaObject::invokeMethod(target(), "shutdown", Qt::QueuedConnection);
++    }
++    static void pair(const QString& pin) {
++        QMutexLocker lock(&mutex());
++        if (target()) QMetaObject::invokeMethod(target(), "pair", Qt::QueuedConnection, Q_ARG(QString, pin));
++    }
++    static void setActive(bool value) { activeFlag() = value; }
++    static bool active() { return activeFlag().load(); }
++    static void interrupt() {
++        if (!active()) return;
++        SDL_Event event{}; event.type = SDL_QUIT; SDL_PushEvent(&event);
++    }
++private:
++    static QObject*& target() { static QObject* value = nullptr; return value; }
++    static QMutex& mutex() { static QMutex value; return value; }
++    static std::atomic<bool>& enabledFlag() { static std::atomic<bool> value{false}; return value; }
++    static std::atomic<bool>& activeFlag() { static std::atomic<bool> value{false}; return value; }
++    static std::atomic<bool>& allowedFlag() { static std::atomic<bool> value{false}; return value; }
++    static std::atomic<bool>& closingFlag() { static std::atomic<bool> value{false}; return value; }
++};
++}
+diff --git a/app/antcloud/tokenstore.cpp b/app/antcloud/tokenstore.cpp
+new file mode 100644
+index 0000000..686f79e
+--- /dev/null
++++ b/app/antcloud/tokenstore.cpp
+@@ -0,0 +1,88 @@
++#include "tokenstore.h"
++#include "protocol.h"
++#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
++#include <Security/Security.h>
++#include <CoreFoundation/CoreFoundation.h>
++
++namespace {
++CFMutableDictionaryRef query() {
++    auto value = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
++        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    CFDictionarySetValue(value, kSecClass, kSecClassGenericPassword);
++    CFDictionarySetValue(value, kSecAttrService, CFSTR("day.ashraf.antcloud.native.login"));
++    CFDictionarySetValue(value, kSecAttrAccount, CFSTR("access-token"));
++    CFDictionarySetValue(value, kSecAttrSynchronizable, kCFBooleanFalse);
++    return value;
++}
++}
++#endif
++
++QString AntCloud::TokenStore::load(QString& error) {
++    error.clear();
++#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
++    auto request = query();
++    CFDictionarySetValue(request, kSecReturnData, kCFBooleanTrue);
++    CFDictionarySetValue(request, kSecMatchLimit, kSecMatchLimitOne);
++    CFTypeRef result = nullptr;
++    OSStatus status = SecItemCopyMatching(request, &result);
++    CFRelease(request);
++    if (status == errSecItemNotFound) return {};
++    if (status != errSecSuccess) {
++        error = QStringLiteral("Keychain could not read the saved login. You can sign in for this run.");
++        return {};
++    }
++    QString token;
++    if (result && CFGetTypeID(result) == CFDataGetTypeID()) {
++        auto data = static_cast<CFDataRef>(result);
++        if (CFDataGetLength(data) <= 16384)
++            token = QString::fromUtf8(reinterpret_cast<const char*>(CFDataGetBytePtr(data)), CFDataGetLength(data));
++    }
++    if (result) CFRelease(result);
++    if (!validToken(token)) {
++        error = QStringLiteral("The saved login has an invalid format. Sign in again to replace it.");
++        return {};
++    }
++    return token;
++#else
++    return {};
++#endif
++}
++
++bool AntCloud::TokenStore::save(const QString& token, QString& error) {
++    error.clear();
++    if (!validToken(token)) { error = "Login token has an invalid format."; return false; }
++#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
++    const auto bytes = token.toUtf8();
++    auto data = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(bytes.constData()), bytes.size());
++    auto request = query();
++    auto update = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
++        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    CFDictionarySetValue(update, kSecValueData, data);
++    OSStatus status = SecItemUpdate(request, update);
++    if (status == errSecItemNotFound) {
++        CFDictionarySetValue(request, kSecValueData, data);
++        CFDictionarySetValue(request, kSecAttrAccessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly);
++        status = SecItemAdd(request, nullptr);
++    }
++    CFRelease(update); CFRelease(request); CFRelease(data);
++    if (status == errSecSuccess) return true;
++    error = "Keychain could not save the login. This run can continue; you will need to sign in next time.";
++#else
++    error = "Remembered login is available in the macOS build only.";
++#endif
++    return false;
++}
++
++bool AntCloud::TokenStore::clear(QString& error) {
++    error.clear();
++#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
++    auto request = query();
++    OSStatus status = SecItemDelete(request);
++    CFRelease(request);
++    if (status == errSecSuccess || status == errSecItemNotFound) return true;
++    error = "Keychain could not remove the saved login. Remove the AntCloud login item in Passwords / Keychain Access.";
++    return false;
++#else
++    return true;
++#endif
++}
+diff --git a/app/antcloud/tokenstore.h b/app/antcloud/tokenstore.h
+new file mode 100644
+index 0000000..b52adb5
+--- /dev/null
++++ b/app/antcloud/tokenstore.h
+@@ -0,0 +1,12 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++#pragma once
++#include <QString>
++
++namespace AntCloud {
++class TokenStore {
++public:
++    static QString load(QString& error);
++    static bool save(const QString& token, QString& error);
++    static bool clear(QString& error);
++};
++}
+diff --git a/app/app.pro b/app/app.pro
+index 1c0661b..a088464 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -1,4 +1,4 @@
+-QT += core quick network quickcontrols2 svg
++QT += core quick network websockets quickcontrols2 svg
+ CONFIG += c++17
+ 
+ unix:!macx {
+@@ -161,11 +161,14 @@ macx {
+         CONFIG += discord-rpc libplacebo
+     }
+ 
+-    LIBS += -lobjc -framework VideoToolbox -framework AVFoundation -framework CoreVideo -framework CoreGraphics -framework CoreMedia -framework AppKit -framework Metal -framework QuartzCore
++    LIBS += -lobjc -framework VideoToolbox -framework AVFoundation -framework CoreVideo -framework CoreGraphics -framework CoreMedia -framework AppKit -framework Security -framework Metal -framework QuartzCore
+     CONFIG += ffmpeg
+ }
+ 
+ SOURCES += \
++    antcloud/controller.cpp \
++    antcloud/providerworker.cpp \
++    antcloud/tokenstore.cpp \
+     backend/nvaddress.cpp \
+     backend/nvapp.cpp \
+     cli/pair.cpp \
+@@ -207,6 +210,11 @@ SOURCES += \
+     wm.cpp
+ 
+ HEADERS += \
++    antcloud/controller.h \
++    antcloud/providerworker.h \
++    antcloud/protocol.h \
++    antcloud/tokenstore.h \
++    antcloud/streambridge.h \
+     SDL_compat.h \
+     backend/nvaddress.h \
+     backend/nvapp.h \
+diff --git a/app/backend/computerseeker.cpp b/app/backend/computerseeker.cpp
+index 574098a..0cdc7a3 100644
+--- a/app/backend/computerseeker.cpp
++++ b/app/backend/computerseeker.cpp
+@@ -35,6 +35,11 @@ void ComputerSeeker::start(int timeout)
+     m_ComputerManager->startPolling();
+ }
+ 
++ComputerSeeker::~ComputerSeeker()
++{
++    if (m_TimeoutTimer->isActive()) m_ComputerManager->stopPollingAsync();
++}
++
+ void ComputerSeeker::onComputerUpdated(NvComputer *computer)
+ {
+     if (!m_TimeoutTimer->isActive()) {
+diff --git a/app/backend/computerseeker.h b/app/backend/computerseeker.h
+index 98adfab..d342b99 100644
+--- a/app/backend/computerseeker.h
++++ b/app/backend/computerseeker.h
+@@ -11,6 +11,7 @@ class ComputerSeeker : public QObject
+     Q_OBJECT
+ public:
+     explicit ComputerSeeker(ComputerManager *manager, QString computerName, QObject *parent = nullptr);
++    ~ComputerSeeker() override;
+ 
+     void start(int timeout);
+ 
+diff --git a/app/backend/nvhttp.cpp b/app/backend/nvhttp.cpp
+index f447b4f..3cd82c3 100644
+--- a/app/backend/nvhttp.cpp
++++ b/app/backend/nvhttp.cpp
+@@ -1,4 +1,5 @@
+ #include "nvcomputer.h"
++#include "antcloud/streambridge.h"
+ #include <Limelight.h>
+ 
+ #include <QDebug>
+@@ -485,6 +486,8 @@ NvHTTP::openConnection(QUrl baseUrl,
+                        int timeoutMs,
+                        NvLogLevel logLevel)
+ {
++    if (!AntCloud::StreamBridge::hostRequestsAllowed())
++        throw QtNetworkReplyException(QNetworkReply::OperationCanceledError, "Native session cancelled");
+     // Port must be set
+     Q_ASSERT(baseUrl.port(0) != 0);
+ 
+@@ -516,9 +519,22 @@ NvHTTP::openConnection(QUrl baseUrl,
+ 
+     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
+     QNetworkReply* reply = m_Nam->get(request);
++    if (!m_ProviderPairingPin.isEmpty() && command == "pair" && arguments.contains("phrase=getservercert")) {
++        const QString pin = m_ProviderPairingPin;
++        connect(reply, &QNetworkReply::requestSent, reply, [pin] { AntCloud::StreamBridge::pair(pin); });
++        m_ProviderPairingPin.clear();
++    }
+ 
+     // Run the request with a timeout if requested
+     QEventLoop loop;
++    QTimer cancellationTimer;
++    if (AntCloud::StreamBridge::enabled()) {
++        cancellationTimer.setInterval(100);
++        connect(&cancellationTimer, &QTimer::timeout, &loop, [&loop] {
++            if (!AntCloud::StreamBridge::hostRequestsAllowed()) loop.quit();
++        });
++        cancellationTimer.start();
++    }
+     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+     if (timeoutMs) {
+diff --git a/app/backend/nvhttp.h b/app/backend/nvhttp.h
+index ea70780..cd539f1 100644
+--- a/app/backend/nvhttp.h
++++ b/app/backend/nvhttp.h
+@@ -101,6 +101,7 @@ private:
+ class NvHTTP : public QObject
+ {
+     Q_OBJECT
++    QString m_ProviderPairingPin;
+ 
+ public:
+     enum NvLogLevel {
+@@ -145,6 +146,7 @@ public:
+     void setAddress(NvAddress address);
+     void setHttpsPort(uint16_t port);
+     void setTrueUid(bool useTrueUid);
++    void setProviderPairingPin(QString pin) { m_ProviderPairingPin = pin; }
+ 
+     NvAddress address();
+ 
+diff --git a/app/backend/nvpairingmanager.cpp b/app/backend/nvpairingmanager.cpp
+index 82a67b7..1f3070a 100644
+--- a/app/backend/nvpairingmanager.cpp
++++ b/app/backend/nvpairingmanager.cpp
+@@ -1,4 +1,5 @@
+ #include "nvpairingmanager.h"
++#include "antcloud/streambridge.h"
+ #include "utils.h"
+ 
+ #include <stdexcept>
+@@ -229,12 +230,13 @@ NvPairingManager::pair(QString appVersion, QString pin, QSslCertificate& serverC
+ 
+     QByteArray aesKey = QCryptographicHash::hash(saltedPin, hashAlgo).constData();
+     aesKey.truncate(16);
++    if (AntCloud::StreamBridge::enabled()) m_Http.setProviderPairingPin(pin);
+ 
+     QString getCert = m_Http.openConnectionToString(m_Http.m_BaseUrlHttp,
+                                                     "pair",
+                                                     "devicename=roth&updateState=1&phrase=getservercert&salt=" +
+                                                     salt.toHex() + "&clientcert=" + IdentityManager::get()->getCertificate().toHex(),
+-                                                    0);
++                                                    AntCloud::StreamBridge::enabled() ? 30000 : 0);
+     NvHTTP::verifyResponseStatus(getCert);
+     if (NvHTTP::getXmlString(getCert, "paired") != "1")
+     {
+diff --git a/app/gui/AntCloudMain.qml b/app/gui/AntCloudMain.qml
+new file mode 100644
+index 0000000..90c5e08
+--- /dev/null
++++ b/app/gui/AntCloudMain.qml
+@@ -0,0 +1,719 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++import QtQuick
++import QtQuick.Window
++import QtQml
++import QtQuick.Controls
++import QtQuick.Layouts
++import QtQuick.Dialogs
++
++ApplicationWindow {
++    id: appWindow
++
++    readonly property color accent: "#0867d2"
++    property bool allowClose: false
++    required property var controller
++    readonly property int currentStage: stageNumbers[appWindow.controller.phase] === undefined ? -1 : stageNumbers[appWindow.controller.phase]
++    readonly property var stageNumbers: ({
++            "connecting": 0,
++            "booting": 1,
++            "host": 2,
++            "pairing": 3,
++            "launching": 3,
++            "video": 4,
++            "connected": 5
++        })
++    readonly property var stepModel: buildStepModel(currentStage, accent, theme.mid)
++
++    function buildStepModel(stage, selectedColor, pendingColor) {
++        var names = ["Provider session", "VM boot", "Native host", "Mac pairing", "Video and audio"];
++        var result = [];
++        for (var index = 0; index < names.length; ++index) {
++            result[index] = {
++                "title": names[index],
++                "number": index + 1,
++                "done": index < stage,
++                "current": index === stage,
++                "future": index > stage,
++                "color": index <= stage ? selectedColor : pendingColor
++            };
++        }
++        return result;
++    }
++
++    color: theme.window
++    font.family: Qt.platform.os === "osx" ? ".AppleSystemUIFont" : "sans-serif"
++    font.pixelSize: 14
++    height: 740
++    minimumHeight: 540
++    minimumWidth: 600
++    objectName: "antcloudWindow"
++    palette.base: theme.base
++    palette.button: theme.button
++    palette.buttonText: theme.buttonText
++    palette.highlight: appWindow.accent
++    palette.highlightedText: "white"
++    palette.mid: theme.mid
++    palette.text: theme.text
++    palette.window: theme.window
++    palette.windowText: theme.windowText
++    title: "AntCloud Native"
++    visible: true
++    width: 860
++
++    menuBar: MenuBar {
++        Menu {
++            title: "Session"
++
++            Action {
++                enabled: appWindow.controller.signedIn && !appWindow.controller.busy
++                text: "Connect"
++
++                onTriggered: appWindow.controller.start()
++            }
++            Action {
++                enabled: appWindow.controller.active
++                text: "Disconnect"
++
++                onTriggered: appWindow.controller.disconnectStream()
++            }
++            Action {
++                enabled: appWindow.controller.active && appWindow.controller.phase !== "connecting"
++                text: "Shutdown VM…"
++
++                onTriggered: shutdownDialog.open()
++            }
++            MenuSeparator {
++            }
++            Action {
++                enabled: appWindow.controller.signedIn && !appWindow.controller.busy
++                text: "Sign out"
++
++                onTriggered: appWindow.controller.signOut()
++            }
++            Action {
++                // Qt maps Ctrl to Command on macOS; stream input uses SDL physical keys.
++                shortcut: "Ctrl+Q"
++                text: "Quit AntCloud Native"
++
++                onTriggered: appWindow.close()
++            }
++        }
++        Menu {
++            title: "Help"
++
++            Action {
++                text: "AntCloud dashboard"
++
++                onTriggered: Qt.openUrlExternally("https://antcloud.co")
++            }
++            Action {
++                text: "Keyboard and mouse controls"
++
++                onTriggered: controlsDialog.open()
++            }
++            Action {
++                text: "Export diagnostic report…"
++
++                onTriggered: reportDialog.open()
++            }
++            Action {
++                text: "Clear diagnostic history"
++
++                onTriggered: appWindow.controller.clearDiagnostics()
++            }
++            Action {
++                text: "About AntCloud Native"
++
++                onTriggered: aboutDialog.open()
++            }
++        }
++    }
++
++    Component.onCompleted: appWindow.controller.initialize(appWindow)
++    onClosing: function (event) {
++        if (appWindow.controller.busy && !allowClose) {
++            event.accepted = false;
++            closeDialog.open();
++        }
++    }
++
++    SystemPalette {
++        id: theme
++        colorGroup: SystemPalette.Active
++    }
++    ScrollView {
++        id: scroll
++        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
++        anchors.fill: parent
++        clip: true
++        contentWidth: availableWidth
++
++        ColumnLayout {
++            spacing: 22
++            width: Math.min(scroll.availableWidth - 56, 720)
++            x: Math.max(28, (scroll.availableWidth - width) / 2)
++
++            Item {
++                Layout.preferredHeight: 10
++            }
++            RowLayout {
++                Layout.fillWidth: true
++                spacing: 12
++
++                Rectangle {
++                    Accessible.ignored: true
++                    Layout.preferredHeight: 38
++                    Layout.preferredWidth: 38
++                    color: appWindow.accent
++                    radius: 9
++
++                    Canvas {
++                        id: appIcon
++                        anchors.fill: parent
++
++                        onPaint: {
++                            var ctx = appIcon.getContext("2d");
++                            ctx.strokeStyle = "white";
++                            ctx.lineWidth = 1.7;
++                            ctx.strokeRect(9, 10, 20, 14);
++                            ctx.beginPath();
++                            ctx.moveTo(19, 24);
++                            ctx.lineTo(19, 29);
++                            ctx.moveTo(14, 29);
++                            ctx.lineTo(24, 29);
++                            ctx.stroke();
++                        }
++                    }
++                }
++                ColumnLayout {
++                    spacing: 2
++
++                    Label {
++                        font.pixelSize: 19
++                        font.weight: Font.DemiBold
++                        text: "AntCloud Native"
++                    }
++                    Label {
++                        font.pixelSize: 13
++                        opacity: 0.75
++                        text: "Windows streaming for macOS"
++                    }
++                }
++                Item {
++                    Layout.fillWidth: true
++                }
++                Button {
++                    enabled: !appWindow.controller.busy
++                    text: "Sign out"
++                    visible: appWindow.controller.signedIn
++
++                    onClicked: appWindow.controller.signOut()
++                }
++            }
++            Rectangle {
++                Layout.fillWidth: true
++                Layout.preferredHeight: 1
++                color: theme.mid
++                opacity: 0.35
++            }
++            ColumnLayout {
++                Layout.fillWidth: true
++                spacing: 18
++                visible: !appWindow.controller.signedIn
++
++                Label {
++                    font.pixelSize: 27
++                    font.weight: Font.DemiBold
++                    text: "Sign in to your VM"
++                }
++                Label {
++                    Layout.fillWidth: true
++                    opacity: 0.8
++                    text: "Your AntCloud account, native video and Mac controls in one app."
++                    wrapMode: Text.WordWrap
++                }
++                GridLayout {
++                    Layout.fillWidth: true
++                    columnSpacing: 20
++                    columns: 2
++                    rowSpacing: 14
++
++                    Label {
++                        Layout.preferredWidth: 84
++                        text: "Email"
++                    }
++                    TextField {
++                        id: email
++                        Accessible.name: "AntCloud email"
++                        Layout.fillWidth: true
++                        enabled: !appWindow.controller.busy
++                        inputMethodHints: Qt.ImhEmailCharactersOnly | Qt.ImhNoPredictiveText
++                        maximumLength: 320
++                        objectName: "emailField"
++                        placeholderText: "AntCloud email"
++                        selectByMouse: true
++
++                        onAccepted: password.forceActiveFocus()
++                    }
++                    Label {
++                        text: "Password"
++                    }
++                    TextField {
++                        id: password
++                        Accessible.name: "AntCloud password"
++                        Layout.fillWidth: true
++                        echoMode: TextInput.Password
++                        enabled: !appWindow.controller.busy
++                        inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
++                        maximumLength: 4096
++                        objectName: "passwordField"
++
++                        onAccepted: signInButton.clicked()
++                    }
++                    Item {
++                    }
++                    CheckBox {
++                        id: remember
++                        checked: true
++                        enabled: !appWindow.controller.busy
++                        text: "Remember login in macOS Keychain"
++                    }
++                    Item {
++                    }
++                    Button {
++                        id: signInButton
++                        Layout.preferredWidth: 180
++                        enabled: !appWindow.controller.busy && email.text.trim().length > 0 && password.text.length > 0
++                        highlighted: true
++                        objectName: "signInButton"
++                        text: appWindow.controller.busy ? "Signing in…" : "Sign in"
++
++                        onClicked: {
++                            if (!enabled)
++                                return;
++                            appWindow.controller.login(email.text, password.text, remember.checked);
++                            password.clear();
++                        }
++                    }
++                }
++                Label {
++                    Layout.fillWidth: true
++                    font.pixelSize: 13
++                    opacity: 0.75
++                    text: "Your password is never saved. A remembered access token stays in Keychain."
++                    wrapMode: Text.WordWrap
++                }
++            }
++            ColumnLayout {
++                Layout.fillWidth: true
++                spacing: 20
++                visible: appWindow.controller.signedIn
++
++                RowLayout {
++                    Layout.fillWidth: true
++
++                    ColumnLayout {
++                        spacing: 6
++
++                        Label {
++                            font.pixelSize: 27
++                            font.weight: Font.DemiBold
++                            text: appWindow.controller.busy ? "Connecting to Windows" : "Your Windows desktop"
++                        }
++                        Label {
++                            font.pixelSize: 13
++                            opacity: 0.75
++                            text: "Account resolution limit: " + appWindow.controller.resolutionLimit + "p"
++                        }
++                    }
++                    Item {
++                        Layout.fillWidth: true
++                    }
++                    Button {
++                        enabled: !appWindow.controller.busy
++                        highlighted: true
++                        objectName: "connectButton"
++                        text: appWindow.controller.busy ? "Connecting…" : "Connect"
++
++                        onClicked: appWindow.controller.start()
++                    }
++                }
++                GridLayout {
++                    Layout.fillWidth: true
++                    columnSpacing: 18
++                    columns: appWindow.width < 720 ? 2 : 3
++                    enabled: !appWindow.controller.busy
++                    rowSpacing: 12
++
++                    ColumnLayout {
++                        Layout.fillWidth: true
++
++                        Label {
++                            font.weight: Font.DemiBold
++                            text: "Resolution"
++                        }
++                        ComboBox {
++                            Accessible.name: "Stream resolution"
++                            Layout.fillWidth: true
++                            currentIndex: appWindow.controller.resolutionIndex
++                            model: ["1280 × 720", "1920 × 1080", "1440 × 900 · experimental", "2560 × 1440", "3840 × 2160"]
++                            objectName: "resolutionPicker"
++
++                            onActivated: appWindow.controller.resolutionIndex = currentIndex
++                        }
++                    }
++                    ColumnLayout {
++                        Layout.fillWidth: true
++
++                        Label {
++                            font.weight: Font.DemiBold
++                            text: "Frame rate"
++                        }
++                        ComboBox {
++                            Accessible.name: "Stream frame rate"
++                            Layout.fillWidth: true
++                            currentIndex: appWindow.controller.fpsIndex
++                            model: ["30 FPS", "60 FPS", "120 FPS"]
++
++                            onActivated: appWindow.controller.fpsIndex = currentIndex
++                        }
++                    }
++                    ColumnLayout {
++                        Layout.fillWidth: true
++
++                        Label {
++                            font.weight: Font.DemiBold
++                            text: "Quality / bitrate"
++                        }
++                        ComboBox {
++                            id: bitratePicker
++
++                            property var rates: [3000, 6000, 12000, 20000, 40000]
++
++                            Accessible.name: "Video bitrate"
++                            Layout.fillWidth: true
++                            currentIndex: Math.max(0, rates.indexOf(appWindow.controller.bitrate))
++                            model: ["3 Mbps · low bandwidth", "6 Mbps · balanced", "12 Mbps · high", "20 Mbps · very high", "40 Mbps · maximum"]
++
++                            onActivated: appWindow.controller.bitrate = rates[currentIndex]
++                        }
++                    }
++                }
++                Label {
++                    Layout.fillWidth: true
++                    font.pixelSize: 13
++                    opacity: 0.8
++                    text: "1440 × 900 requests that size from the native host using the provider’s 1080p preset. Windows display support is still required."
++                    visible: appWindow.controller.resolutionIndex === 2
++                    wrapMode: Text.WordWrap
++                }
++                Flow {
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: implicitHeight
++                    enabled: !appWindow.controller.busy
++                    spacing: 20
++
++                    CheckBox {
++                        checked: appWindow.controller.fullscreen
++                        text: "Fullscreen"
++
++                        onToggled: appWindow.controller.fullscreen = checked
++                    }
++                    CheckBox {
++                        checked: appWindow.controller.relativeMouse
++                        text: "Relative mouse"
++
++                        onToggled: appWindow.controller.relativeMouse = checked
++                    }
++                    CheckBox {
++                        checked: appWindow.controller.showStats
++                        text: "Show stream stats"
++
++                        onToggled: appWindow.controller.showStats = checked
++                    }
++                }
++                Rectangle {
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 1
++                    color: theme.mid
++                    opacity: 0.35
++                }
++                ColumnLayout {
++                    Layout.fillWidth: true
++                    spacing: 12
++
++                    RowLayout {
++                        Layout.fillWidth: true
++
++                        Label {
++                            font.weight: Font.DemiBold
++                            text: appWindow.controller.busy ? "Connection progress" : "Session"
++                        }
++                        Item {
++                            Layout.fillWidth: true
++                        }
++                        Label {
++                            font.pixelSize: 13
++                            opacity: 0.75
++                            text: Math.floor(appWindow.controller.elapsed / 60) + "m " + (appWindow.controller.elapsed % 60) + "s elapsed"
++                            visible: appWindow.controller.active
++                        }
++                    }
++                    Label {
++                        Accessible.name: "Connection status: " + text
++                        Layout.fillWidth: true
++                        objectName: "connectionDetail"
++                        text: appWindow.controller.detail
++                        wrapMode: Text.WordWrap
++                    }
++                    ColumnLayout {
++                        Layout.fillWidth: true
++                        spacing: 10
++                        visible: appWindow.controller.busy
++
++                        Repeater {
++                            model: appWindow.stepModel
++
++                            delegate: RowLayout {
++                                id: connectionStep
++
++                                required property var modelData
++
++                                Layout.fillWidth: true
++
++                                Rectangle {
++                                    Layout.preferredHeight: 22
++                                    Layout.preferredWidth: 22
++                                    color: connectionStep.modelData.color
++                                    radius: 11
++
++                                    Label {
++                                        anchors.centerIn: parent
++                                        color: "white"
++                                        font.pixelSize: 12
++                                        text: connectionStep.modelData.done ? "✓" : String(connectionStep.modelData.number)
++                                    }
++                                }
++                                Label {
++                                    font.weight: connectionStep.modelData.current ? Font.DemiBold : Font.Normal
++                                    opacity: connectionStep.modelData.future ? 0.6 : 1
++                                    text: connectionStep.modelData.title
++                                }
++                                Label {
++                                    font.pixelSize: 12
++                                    opacity: 0.7
++                                    text: "In progress"
++                                    visible: connectionStep.modelData.current
++                                }
++                            }
++                        }
++                    }
++                    RowLayout {
++                        visible: appWindow.controller.active
++
++                        Button {
++                            text: "Disconnect"
++
++                            onClicked: appWindow.controller.disconnectStream()
++                        }
++                        Button {
++                            enabled: appWindow.controller.phase !== "connecting"
++                            objectName: "shutdownButton"
++                            text: "Shutdown VM…"
++
++                            onClicked: shutdownDialog.open()
++                        }
++                    }
++                }
++            }
++            Label {
++                Accessible.name: text
++                Layout.fillWidth: true
++                color: theme.windowText
++                font.weight: Font.DemiBold
++                objectName: "errorMessage"
++                text: "Connection issue\n" + appWindow.controller.error
++                visible: appWindow.controller.error.length > 0
++                wrapMode: Text.WordWrap
++            }
++            Label {
++                Layout.fillWidth: true
++                text: appWindow.controller.notice
++                visible: appWindow.controller.notice.length > 0
++                wrapMode: Text.WordWrap
++            }
++            Rectangle {
++                Layout.fillWidth: true
++                Layout.preferredHeight: 1
++                color: theme.mid
++                opacity: 0.35
++            }
++            RowLayout {
++                Layout.fillWidth: true
++
++                Label {
++                    Layout.fillWidth: true
++                    font.pixelSize: 12
++                    opacity: 0.8
++                    text: "Local stream controls: Control + Command + Shift + P"
++                    wrapMode: Text.WordWrap
++                }
++                Button {
++                    flat: true
++                    text: "Controls"
++
++                    onClicked: controlsDialog.open()
++                }
++            }
++            Item {
++                Layout.preferredHeight: 16
++            }
++        }
++    }
++    Dialog {
++        id: shutdownDialog
++        anchors.centerIn: parent
++        closePolicy: Popup.CloseOnEscape
++        focus: true
++        modal: true
++        objectName: "shutdownDialog"
++        palette: appWindow.palette
++        title: "Shutdown your Windows VM?"
++        width: Math.min(480, appWindow.width - 40)
++
++        contentItem: Label {
++            text: "Save your work first. This sends AntCloud’s VM shutdown command once. Check the dashboard for the final power state."
++            wrapMode: Text.WordWrap
++        }
++        footer: RowLayout {
++            spacing: 10
++
++            Item {
++                Layout.fillWidth: true
++            }
++            Button {
++                id: cancelShutdown
++                focus: true
++                objectName: "cancelShutdown"
++                text: "Cancel"
++
++                Keys.onEnterPressed: clicked()
++                Keys.onReturnPressed: clicked()
++                onClicked: shutdownDialog.close()
++            }
++            Button {
++                objectName: "confirmShutdown"
++                text: "Shutdown VM"
++
++                Keys.onEnterPressed: clicked()
++                Keys.onReturnPressed: clicked()
++                onClicked: {
++                    shutdownDialog.close();
++                    appWindow.controller.shutdown();
++                }
++            }
++            Item {
++                Layout.preferredWidth: 12
++            }
++        }
++
++        onOpened: shutdownFocusTimer.start()
++
++        Timer {
++            id: shutdownFocusTimer
++            interval: 0
++
++            onTriggered: cancelShutdown.forceActiveFocus()
++        }
++    }
++    Dialog {
++        id: closeDialog
++        anchors.centerIn: parent
++        modal: true
++        palette: appWindow.palette
++        title: "Disconnect and quit?"
++        width: Math.min(480, appWindow.width - 40)
++
++        contentItem: Label {
++            text: "Your native stream will disconnect. No explicit VM shutdown command will be sent; AntCloud’s idle policy may still stop the VM."
++            wrapMode: Text.WordWrap
++        }
++        footer: RowLayout {
++            spacing: 10
++
++            Item {
++                Layout.fillWidth: true
++            }
++            Button {
++                id: cancelClose
++                focus: true
++                text: "Cancel"
++
++                Keys.onEnterPressed: clicked()
++                Keys.onReturnPressed: clicked()
++                onClicked: closeDialog.close()
++            }
++            Button {
++                text: "Disconnect and quit"
++
++                Keys.onEnterPressed: clicked()
++                Keys.onReturnPressed: clicked()
++                onClicked: {
++                    closeDialog.close();
++                    appWindow.controller.disconnectStream();
++                    appWindow.allowClose = true;
++                    appWindow.close();
++                }
++            }
++            Item {
++                Layout.preferredWidth: 12
++            }
++        }
++
++        onOpened: closeFocusTimer.start()
++
++        Timer {
++            id: closeFocusTimer
++            interval: 0
++
++            onTriggered: cancelClose.forceActiveFocus()
++        }
++    }
++    Dialog {
++        id: controlsDialog
++        anchors.centerIn: parent
++        modal: true
++        palette: appWindow.palette
++        standardButtons: Dialog.Close
++        title: "Mac stream controls"
++        width: Math.min(540, appWindow.width - 40)
++
++        contentItem: Label {
++            text: "Windows modifiers\nCommand → Alt · Option → Windows · Control → Ctrl\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate and stream dimensions. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
++            wrapMode: Text.WordWrap
++        }
++    }
++    Dialog {
++        id: aboutDialog
++        anchors.centerIn: parent
++        modal: true
++        palette: appWindow.palette
++        standardButtons: Dialog.Close
++        title: "AntCloud Native"
++        width: Math.min(460, appWindow.width - 40)
++
++        contentItem: Label {
++            text: "Personal macOS client, based on Moonlight 6.2.0.\n\nNative C++ / Qt with the existing Moonlight video, audio and input engine. Not an official AntCloud release.\n\nGPL-3.0-or-later. Full source and upstream notices are included in the source package.\n\nDiagnostics are limited to the last 64 safe session events in memory. A report is written only when you export it."
++            wrapMode: Text.WordWrap
++        }
++    }
++    FileDialog {
++        id: reportDialog
++        defaultSuffix: "txt"
++        fileMode: FileDialog.SaveFile
++        nameFilters: ["Text report (*.txt)"]
++        title: "Export a redacted diagnostic report"
++
++        onAccepted: appWindow.controller.exportDiagnostics(selectedFile)
++    }
++}
+diff --git a/app/gui/SettingsView.qml b/app/gui/SettingsView.qml
+index c119d15..8c8981c 100644
+--- a/app/gui/SettingsView.qml
++++ b/app/gui/SettingsView.qml
+@@ -252,6 +252,12 @@ Flickable {
+                                 video_height: "720"
+                                 is_custom: false
+                             }
++                            ListElement {
++                                text: qsTr("1440×900 (host support required)")
++                                video_width: "1440"
++                                video_height: "900"
++                                is_custom: false
++                            }
+                             ListElement {
+                                 text: qsTr("1080p")
+                                 video_width: "1920"
+@@ -1332,7 +1338,7 @@ Flickable {
+                     id: absoluteMouseCheck
+                     hoverEnabled: true
+                     width: parent.width
+-                    text: qsTr("Optimize mouse for remote desktop instead of games")
++                    text: qsTr("Desktop mouse mode (off = unlimited relative game movement)")
+                     font.pointSize:  12
+                     checked: StreamingPreferences.absoluteMouseMode
+                     onCheckedChanged: {
+@@ -1343,7 +1349,7 @@ Flickable {
+                     ToolTip.timeout: 10000
+                     ToolTip.visible: hovered
+                     ToolTip.text: qsTr("This enables seamless mouse control without capturing the client's mouse cursor. It is ideal for remote desktop usage but will not work in most games.") + " " +
+-                                  qsTr("You can toggle this while streaming using Ctrl+Alt+Shift+M.") + "\n\n" +
++                                  qsTr("Toggle mouse mode while streaming using %1.").arg(Qt.platform.os === "osx" ? "Control+Command+Shift+M" : "Ctrl+Alt+Shift+M") + "\n\n" +
+                                   qsTr("NOTE: Due to a bug in GeForce Experience, this option may not work properly if your host PC has multiple monitors.")
+                 }
+ 
+@@ -1807,7 +1813,7 @@ Flickable {
+                     ToolTip.timeout: 5000
+                     ToolTip.visible: hovered
+                     ToolTip.text: qsTr("Display real-time stream performance information while streaming.") + "\n\n" +
+-                                  qsTr("You can toggle it at any time while streaming using Ctrl+Alt+Shift+S or Select+L1+R1+X.") + "\n\n" +
++                                  qsTr("Toggle stats while streaming using %1.").arg(Qt.platform.os === "osx" ? "Control+Command+Shift+S" : "Ctrl+Alt+Shift+S") + "\n\n" +
+                                   qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
+                 }
+             }
+diff --git a/app/gui/main.qml b/app/gui/main.qml
+index 84e7d9d..318ffbc 100644
+--- a/app/gui/main.qml
++++ b/app/gui/main.qml
+@@ -369,8 +369,8 @@ ApplicationWindow {
+                 }
+ 
+                 Component.onCompleted: {
+-                    AutoUpdateChecker.onUpdateAvailable.connect(updateAvailable)
+-                    AutoUpdateChecker.start()
++                    // This modified client is updated through its source package.
++                    // Stock Moonlight updates would discard the custom input mapping.
+                 }
+ 
+                 Keys.onDownPressed: {
+diff --git a/app/main.cpp b/app/main.cpp
+index 2b701d7..f913d6d 100644
+--- a/app/main.cpp
++++ b/app/main.cpp
+@@ -53,6 +53,9 @@
+ #include "backend/systemproperties.h"
+ #include "streaming/session.h"
+ #include "settings/streamingpreferences.h"
++#include "antcloud/controller.h"
++#include "antcloud/streambridge.h"
++#include <memory>
+ #include "gui/sdlgamepadkeynavigation.h"
+ 
+ #if defined(Q_OS_WIN32)
+@@ -61,8 +64,7 @@
+ // Log to file or console dynamically for Windows builds
+ #define LOG_TO_FILE
+ #elif !defined(QT_DEBUG) && defined(Q_OS_DARWIN)
+-// Log to file for release Mac builds
+-#define LOG_TO_FILE
++// Normal Mac launches do not create diagnostic files.
+ #else
+ // Log to console for debug Mac builds
+ #endif
+@@ -116,6 +118,7 @@ private:
+ 
+ void logToLoggerStream(QString& message)
+ {
++    if (!qEnvironmentVariableIsSet("ANTCLOUD_DEVELOPER_CONSOLE")) return;
+ #if defined(QT_DEBUG) && defined(Q_OS_WIN32)
+     // Output log messages to a debugger if attached
+     if (IsDebuggerPresent()) {
+@@ -428,9 +431,9 @@ int main(int argc, char *argv[])
+     // Set these here to allow us to use the default QSettings constructor.
+     // These also ensure that our cache directory is named correctly. As such,
+     // it is critical that these be called before Path::initialize().
+-    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
++    QCoreApplication::setOrganizationName("AntCloud Native");
+     QCoreApplication::setOrganizationDomain("moonlight-stream.com");
+-    QCoreApplication::setApplicationName("Moonlight");
++    QCoreApplication::setApplicationName("AntCloudNative");
+ 
+     if (QFile(QDir::currentPath() + "/portable.dat").exists()) {
+         QSettings::setDefaultFormat(QSettings::IniFormat);
+@@ -715,8 +718,8 @@ int main(int argc, char *argv[])
+     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
+     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
+     // for screensaver inhibitor reporting.
+-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight");
+-    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight");
++    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "AntCloud Native");
++    SDL_SetHint(SDL_HINT_APP_NAME, "AntCloud Native");
+ 
+     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
+     // support applications that assume they can warp the cursor (which isn't possible
+@@ -754,6 +757,7 @@ int main(int argc, char *argv[])
+     }
+ 
+     QGuiApplication app(argc, argv);
++    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [] { AntCloud::StreamBridge::setClosing(); });
+ 
+ #ifdef Q_OS_DARWIN
+     // macOS defaults "Keyboard navigation" to text fields and lists only, which
+@@ -963,29 +967,44 @@ int main(int argc, char *argv[])
+     // Create the identity manager on the main thread
+     IdentityManager::get();
+ 
+-    // We require the Material theme
+-    QQuickStyle::setStyle("Material");
++    const bool standalone = commandLineParserResult == GlobalCommandLineParser::NormalStartRequested;
++    if (standalone) {
++#ifdef Q_OS_MACOS
++        QQuickStyle::setStyle("macOS");
++#else
++        QQuickStyle::setStyle("Basic");
++#endif
++    } else {
++        // We require the Material theme
++        QQuickStyle::setStyle("Material");
+ 
+-    // Our icons are styled for a dark theme, so we do not allow the user to override this
+-    qputenv("QT_QUICK_CONTROLS_MATERIAL_THEME", "Dark");
++        // Our icons are styled for a dark theme, so we do not allow the user to override this
++        qputenv("QT_QUICK_CONTROLS_MATERIAL_THEME", "Dark");
++
++        // These are defaults that we allow the user to override
++        if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_ACCENT")) {
++            qputenv("QT_QUICK_CONTROLS_MATERIAL_ACCENT", "Purple");
++        }
++        if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_VARIANT")) {
++            qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
++        }
++        if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_PRIMARY")) {
++            // Qt 6.9 began to use a different shade of Material.Indigo when we use a dark theme
++            // (which is all the time). The new color looks washed out, so manually specify the
++            // old primary color unless the user overrides it themselves.
++            qputenv("QT_QUICK_CONTROLS_MATERIAL_PRIMARY", "#3F51B5");
++        }
+ 
+-    // These are defaults that we allow the user to override
+-    if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_ACCENT")) {
+-        qputenv("QT_QUICK_CONTROLS_MATERIAL_ACCENT", "Purple");
+-    }
+-    if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_VARIANT")) {
+-        qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
+-    }
+-    if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_PRIMARY")) {
+-        // Qt 6.9 began to use a different shade of Material.Indigo when we use a dark theme
+-        // (which is all the time). The new color looks washed out, so manually specify the
+-        // old primary color unless the user overrides it themselves.
+-        qputenv("QT_QUICK_CONTROLS_MATERIAL_PRIMARY", "#3F51B5");
+     }
+ 
++    std::unique_ptr<AntCloud::Controller> nativeController;
+     QQmlApplicationEngine engine;
+     QString initialView;
+     bool hasGUI = true;
++    if (standalone) {
++        nativeController = std::make_unique<AntCloud::Controller>();
++        engine.setInitialProperties({{"controller", QVariant::fromValue(static_cast<QObject*>(nativeController.get()))}});
++    }
+ 
+     switch (commandLineParserResult) {
+     case GlobalCommandLineParser::NormalStartRequested:
+@@ -1037,7 +1056,7 @@ int main(int argc, char *argv[])
+         engine.rootContext()->setContextProperty("runConfigChecks", commandLineParserResult == GlobalCommandLineParser::NormalStartRequested);
+ 
+         // Load the main.qml file
+-        engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));
++        engine.load(QUrl(standalone ? QStringLiteral("qrc:/gui/AntCloudMain.qml") : QStringLiteral("qrc:/gui/main.qml")));
+         if (engine.rootObjects().isEmpty())
+             return -1;
+     }
+@@ -1046,7 +1065,7 @@ int main(int argc, char *argv[])
+ 
+     // Give worker tasks time to properly exit. Fixes PendingQuitTask
+     // sometimes freezing and blocking process exit.
+-    QThreadPool::globalInstance()->waitForDone(30000);
++    QThreadPool::globalInstance()->waitForDone();
+ 
+     // Restore the default logger for all libraries before shutting down ours
+ #if SDL_VERSION_ATLEAST(3, 0, 0)
+diff --git a/app/qml.qrc b/app/qml.qrc
+index 5c2c369..fe64ec3 100644
+--- a/app/qml.qrc
++++ b/app/qml.qrc
+@@ -1,6 +1,7 @@
+ <RCC>
+     <qresource prefix="/">
+         <file>gui/main.qml</file>
++        <file>gui/AntCloudMain.qml</file>
+         <file>gui/PcView.qml</file>
+         <file>gui/AppView.qml</file>
+         <file>gui/SettingsView.qml</file>
+diff --git a/app/settings/streamingpreferences.cpp b/app/settings/streamingpreferences.cpp
+index 6d143af..a907816 100644
+--- a/app/settings/streamingpreferences.cpp
++++ b/app/settings/streamingpreferences.cpp
+@@ -122,15 +122,15 @@ void StreamingPreferences::reload()
+     }
+ #endif
+ 
+-    width = settings.value(SER_WIDTH, 1920).toInt();
+-    height = settings.value(SER_HEIGHT, 1080).toInt();
++    width = settings.value(SER_WIDTH, 1280).toInt();
++    height = settings.value(SER_HEIGHT, 720).toInt();
+     fps = settings.value(SER_FPS, 60).toInt();
+     enableYUV444 = settings.value(SER_YUV444, false).toBool();
+-    bitrateKbps = settings.value(SER_BITRATE, getDefaultBitrate(width, height, fps, enableYUV444)).toInt();
++    bitrateKbps = settings.value(SER_BITRATE, 6000).toInt();
+     unlockBitrate = settings.value(SER_UNLOCK_BITRATE, false).toBool();
+     autoAdjustBitrate = settings.value(SER_AUTOADJUSTBITRATE, true).toBool();
+     enableVsync = settings.value(SER_VSYNC, true).toBool();
+-    gameOptimizations = settings.value(SER_GAMEOPTS, true).toBool();
++    gameOptimizations = settings.value(SER_GAMEOPTS, false).toBool();
+     playAudioOnHost = settings.value(SER_HOSTAUDIO, false).toBool();
+     multiController = settings.value(SER_MULTICONT, true).toBool();
+     enableMdns = settings.value(SER_MDNS, true).toBool();
+@@ -143,7 +143,7 @@ void StreamingPreferences::reload()
+     richPresence = settings.value(SER_RICHPRESENCE, true).toBool();
+     gamepadMouse = settings.value(SER_GAMEPADMOUSE, true).toBool();
+     detectNetworkBlocking = settings.value(SER_DETECTNETBLOCKING, true).toBool();
+-    showPerformanceOverlay = settings.value(SER_SHOWPERFOVERLAY, false).toBool();
++    showPerformanceOverlay = settings.value(SER_SHOWPERFOVERLAY, true).toBool();
+     packetSize = settings.value(SER_PACKETSIZE, 0).toInt();
+     swapMouseButtons = settings.value(SER_SWAPMOUSEBUTTONS, false).toBool();
+     muteOnFocusLoss = settings.value(SER_MUTEONFOCUSLOSS, false).toBool();
+@@ -153,7 +153,7 @@ void StreamingPreferences::reload()
+     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
+     enableHdr = settings.value(SER_HDR, false).toBool();
+     captureSysKeysMode = static_cast<CaptureSysKeysMode>(settings.value(SER_CAPTURESYSKEYS,
+-                                                         static_cast<int>(CaptureSysKeysMode::CSK_OFF)).toInt());
++                                                         static_cast<int>(CaptureSysKeysMode::CSK_ALWAYS)).toInt());
+     audioConfig = static_cast<AudioConfig>(settings.value(SER_AUDIOCFG,
+                                                   static_cast<int>(AudioConfig::AC_STEREO)).toInt());
+     videoCodecConfig = static_cast<VideoCodecConfig>(settings.value(SER_VIDEOCFG,
+diff --git a/app/streaming/input/antcloudcontrols.h b/app/streaming/input/antcloudcontrols.h
+new file mode 100644
+index 0000000..98ce7e5
+--- /dev/null
++++ b/app/streaming/input/antcloudcontrols.h
+@@ -0,0 +1,122 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++#pragma once
++#include "SDL_compat.h"
++#include <SDL_ttf.h>
++#include "path.h"
++#include "antcloud/streambridge.h"
++
++// This window shares the stream's SDL event loop. Its input never reaches Windows.
++class AntCloudControls {
++public:
++    enum Action { None, Resume, Stop, Shutdown };
++    ~AntCloudControls() { close(); }
++    bool enabled() const { return AntCloud::StreamBridge::enabled(); }
++    void hide() { if (m_Window) SDL_HideWindow(m_Window); }
++    void close() {
++        if (m_Font) TTF_CloseFont(m_Font);
++        if (m_Renderer) SDL_DestroyRenderer(m_Renderer);
++        if (m_Window) SDL_DestroyWindow(m_Window);
++        m_Font = nullptr; m_Renderer = nullptr; m_Window = nullptr;
++    }
++    bool show(SDL_Window* stream) {
++        if (!enabled()) return false;
++        m_Pressed = None;
++        if (!m_Window) {
++            m_FontData = Path::readDataFile("ModeSeven.ttf");
++            m_Font = TTF_OpenFontRW(SDL_RWFromConstMem(m_FontData.constData(), m_FontData.size()), 1, 20);
++            m_Window = SDL_CreateWindow("AntCloud Native — stream controls", SDL_WINDOWPOS_CENTERED,
++                SDL_WINDOWPOS_CENTERED, 660, 112, SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_ALWAYS_ON_TOP);
++            if (m_Window) m_Renderer = SDL_CreateRenderer(m_Window, -1, SDL_RENDERER_SOFTWARE);
++            if (!m_Font || !m_Window || !m_Renderer) {
++                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Local controls could not open: %s", SDL_GetError());
++                close(); return false;
++            }
++            SDL_RenderSetLogicalSize(m_Renderer, 660, 112);
++        }
++        int x, y, w, h;
++        SDL_GetWindowPosition(stream, &x, &y); SDL_GetWindowSize(stream, &w, &h);
++        SDL_SetWindowPosition(m_Window, x + (w - 660) / 2, y + 64);
++        SDL_ShowWindow(m_Window); SDL_RaiseWindow(m_Window); render();
++        return true;
++    }
++    bool handles(const SDL_Event& event) const {
++        if (!m_Window) return false;
++        Uint32 id = 0;
++        switch (event.type) {
++        case SDL_WINDOWEVENT: id = event.window.windowID; break;
++        case SDL_KEYDOWN: case SDL_KEYUP: id = event.key.windowID; break;
++        case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: id = event.button.windowID; break;
++        case SDL_MOUSEMOTION: id = event.motion.windowID; break;
++        case SDL_MOUSEWHEEL: id = event.wheel.windowID; break;
++        case SDL_TEXTINPUT: id = event.text.windowID; break;
++        case SDL_TEXTEDITING: id = event.edit.windowID; break;
++        default: return false;
++        }
++        return id == SDL_GetWindowID(m_Window);
++    }
++    Action handle(const SDL_Event& event) {
++        if (event.type == SDL_WINDOWEVENT) {
++            if (event.window.event == SDL_WINDOWEVENT_CLOSE) return Resume;
++            if (event.window.event == SDL_WINDOWEVENT_EXPOSED) render();
++        }
++        if (event.type == SDL_KEYDOWN && !event.key.repeat &&
++            (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_RETURN)) return Resume;
++        if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
++            m_Pressed = buttonAt(event.button.x, event.button.y);
++        if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT) {
++            Action action = buttonAt(event.button.x, event.button.y);
++            bool clicked = action != None && action == m_Pressed;
++            m_Pressed = None;
++            if (clicked) return action;
++        }
++        return None;
++    }
++    bool confirmShutdown() {
++        const SDL_MessageBoxButtonData buttons[] = {
++            {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
++            {0, 1, "Shutdown VM"}
++        };
++        const SDL_MessageBoxData dialog = {SDL_MESSAGEBOX_WARNING, m_Window, "Shutdown AntCloud VM?",
++            "Save your work first. This requests the same shutdown control as AntCloud's browser.\n\n"
++            "This is different from Stop stream, which sends no shutdown request.", 2, buttons, nullptr};
++        int selected = 0;
++        return SDL_ShowMessageBox(&dialog, &selected) == 0 && selected == 1;
++    }
++    bool requestShutdown() {
++        return AntCloud::StreamBridge::shutdown();
++    }
++private:
++    static Action buttonAt(int x, int y) {
++        if (y < 50 || y >= 96) return None;
++        if (x >= 16 && x < 208) return Resume;
++        if (x >= 224 && x < 432) return Stop;
++        if (x >= 448 && x < 644) return Shutdown;
++        return None;
++    }
++    void text(const char* value, int x, int y) {
++        SDL_Surface* surface = TTF_RenderUTF8_Blended(m_Font, value, {245, 245, 245, 255});
++        if (!surface) return;
++        SDL_Texture* texture = SDL_CreateTextureFromSurface(m_Renderer, surface);
++        if (texture) {
++            SDL_Rect target = {x, y, surface->w, surface->h};
++            SDL_RenderCopy(m_Renderer, texture, nullptr, &target); SDL_DestroyTexture(texture);
++        }
++        SDL_FreeSurface(surface);
++    }
++    void render() {
++        SDL_SetRenderDrawColor(m_Renderer, 24, 28, 36, 255); SDL_RenderClear(m_Renderer);
++        text("Input released - choose a local action", 16, 14);
++        const SDL_Rect boxes[] = {{16, 50, 192, 46}, {224, 50, 208, 46}, {448, 50, 196, 46}};
++        for (int i = 0; i < 3; ++i) {
++            SDL_SetRenderDrawColor(m_Renderer, i == 2 ? 135 : 48, i == 2 ? 40 : 59, i == 2 ? 46 : 74, 255);
++            SDL_RenderFillRect(m_Renderer, &boxes[i]);
++        }
++        text("Resume", 62, 64); text("Stop stream", 254, 64); text("Shutdown VM", 472, 64);
++        SDL_RenderPresent(m_Renderer);
++    }
++    SDL_Window* m_Window = nullptr;
++    SDL_Renderer* m_Renderer = nullptr;
++    TTF_Font* m_Font = nullptr;
++    QByteArray m_FontData;
++    Action m_Pressed = None;
++};
+diff --git a/app/streaming/input/antcloudinput.h b/app/streaming/input/antcloudinput.h
+new file mode 100644
+index 0000000..bfe5c2d
+--- /dev/null
++++ b/app/streaming/input/antcloudinput.h
+@@ -0,0 +1,25 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++#pragma once
++#include "SDL_compat.h"
++
++namespace AntCloudInput {
++// Only remote SDL events are translated. Physical modifiers still identify the
++// client's escape/toggle combinations before this function is called.
++inline SDL_KeyboardEvent mapMacModifiers(SDL_KeyboardEvent event)
++{
++    switch (event.keysym.scancode) {
++    case SDL_SCANCODE_LGUI: event.keysym.scancode = SDL_SCANCODE_LALT; break;
++    case SDL_SCANCODE_RGUI: event.keysym.scancode = SDL_SCANCODE_RALT; break;
++    case SDL_SCANCODE_LALT: event.keysym.scancode = SDL_SCANCODE_LGUI; break;
++    case SDL_SCANCODE_RALT: event.keysym.scancode = SDL_SCANCODE_RGUI; break;
++    default: break;
++    }
++    const auto physical = event.keysym.mod;
++    event.keysym.mod &= ~(KMOD_ALT | KMOD_GUI);
++    if (physical & KMOD_LGUI) event.keysym.mod |= KMOD_LALT;
++    if (physical & KMOD_RGUI) event.keysym.mod |= KMOD_RALT;
++    if (physical & KMOD_LALT) event.keysym.mod |= KMOD_LGUI;
++    if (physical & KMOD_RALT) event.keysym.mod |= KMOD_RGUI;
++    return event;
++}
++}
+diff --git a/app/streaming/input/input.cpp b/app/streaming/input/input.cpp
+index 2597f99..a80378a 100644
+--- a/app/streaming/input/input.cpp
++++ b/app/streaming/input/input.cpp
+@@ -79,6 +79,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
+     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
+     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
+ 
++    m_SpecialKeyCombos[KeyComboStreamControls].keyCombo = KeyComboStreamControls;
++    m_SpecialKeyCombos[KeyComboStreamControls].keyCode = SDLK_p;
++    m_SpecialKeyCombos[KeyComboStreamControls].scanCode = SDL_SCANCODE_P;
++    m_SpecialKeyCombos[KeyComboStreamControls].enabled = m_LocalControls.enabled();
++
+     // Populate special key combo configuration
+     m_SpecialKeyCombos[KeyComboQuit].keyCombo = KeyComboQuit;
+     m_SpecialKeyCombos[KeyComboQuit].keyCode = SDLK_q;
+@@ -218,6 +223,7 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
+ 
+ SdlInputHandler::~SdlInputHandler()
+ {
++    m_LocalControls.close();
+     for (int i = 0; i < MAX_GAMEPADS; i++) {
+         if (m_GamepadState[i].mouseEmulationTimer != 0) {
+             Session::get()->notifyMouseEmulationMode(false);
+@@ -280,6 +286,13 @@ void SdlInputHandler::notifyFocusLost()
+         setCaptureActive(false);
+     }
+ 
++#ifdef Q_OS_DARWIN
++    // Release native capture on every focus loss, including fullscreen Spaces.
++    m_ResumeCaptureOnFocusGain = isCaptureActive();
++    setCaptureActive(false);
++#endif
++    raiseAllMouseButtons();
++
+     // Raise all keys that are currently pressed. If we don't do this, certain keys
+     // used in shortcuts that cause focus loss (such as Alt+Tab) may get stuck down.
+     raiseAllKeys();
+@@ -287,6 +300,12 @@ void SdlInputHandler::notifyFocusLost()
+ 
+ void SdlInputHandler::notifyFocusGained()
+ {
++#ifdef Q_OS_DARWIN
++    if (m_ResumeCaptureOnFocusGain) {
++        m_ResumeCaptureOnFocusGain = false;
++        setCaptureActive(true);
++    }
++#endif
+ }
+ 
+ bool SdlInputHandler::isCaptureActive()
+@@ -352,9 +371,16 @@ bool SdlInputHandler::isSystemKeyCaptureActive()
+ 
+ void SdlInputHandler::setCaptureActive(bool active)
+ {
++    if (active) m_LocalControls.hide();
+     if (active) {
+         // If we're in relative mode, try to activate SDL's relative mouse mode
+         if (m_AbsoluteMouseMode || SDL_SetRelativeMouseMode(SDL_TRUE) < 0) {
++            if (!m_AbsoluteMouseMode) {
++                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Relative mouse capture failed: %s", SDL_GetError());
++                Session::get()->getOverlayManager().updateOverlayText(Overlay::OverlayStatusUpdate,
++                    "Relative mouse capture failed. Release capture and check macOS input permissions.");
++                Session::get()->getOverlayManager().setOverlayState(Overlay::OverlayStatusUpdate, true);
++            }
+             // Relative mouse mode didn't work or was disabled, so we'll just hide the cursor
+             SDL_ShowCursor(m_MouseCursorCapturedVisibilityState);
+             m_FakeMouseCaptureActive = true;
+@@ -387,6 +413,8 @@ void SdlInputHandler::setCaptureActive(bool active)
+         }
+     }
+     else {
++        raiseAllKeys();
++        raiseAllMouseButtons();
+         if (m_FakeMouseCaptureActive) {
+             // Display the cursor again
+             SDL_ShowCursor(SDL_ENABLE);
+diff --git a/app/streaming/input/input.h b/app/streaming/input/input.h
+index 151c69c..44bf7ba 100644
+--- a/app/streaming/input/input.h
++++ b/app/streaming/input/input.h
+@@ -4,6 +4,7 @@
+ #include "backend/computermanager.h"
+ 
+ #include "SDL_compat.h"
++#include "antcloudcontrols.h"
+ 
+ struct GamepadState {
+     SDL_GameController* controller;
+@@ -92,6 +93,9 @@ public:
+ 
+     void handleKeyEvent(SDL_KeyboardEvent* event);
+ 
++    bool handleLocalControlEvent(const SDL_Event& event);
++    void showLocalControls();
++
+     void handleMouseButtonEvent(SDL_MouseButtonEvent* event);
+ 
+     void handleMouseMotionEvent(SDL_MouseMotionEvent* event);
+@@ -134,6 +138,8 @@ public:
+ 
+     void raiseAllKeys();
+ 
++    void raiseAllMouseButtons();
++
+     void notifyMouseLeave();
+ 
+     void notifyFocusLost();
+@@ -168,6 +174,7 @@ private:
+         KeyComboTogglePointerRegionLock,
+         KeyComboQuitAndExit,
+         KeyComboToggleKeyboardGrab,
++        KeyComboStreamControls,
+         KeyComboMax
+     };
+ 
+@@ -219,6 +226,8 @@ private:
+     int m_GamepadMask;
+     GamepadState m_GamepadState[MAX_GAMEPADS];
+     QSet<uint32_t> m_KeysDown;
++    QSet<int> m_MouseButtonsDown;
++    bool m_ResumeCaptureOnFocusGain = false;
+     bool m_FakeMouseCaptureActive;
+     bool m_KeyboardCaptureActive;
+     QString m_OldIgnoreDevices;
+@@ -234,6 +243,8 @@ private:
+         bool enabled;
+     } m_SpecialKeyCombos[KeyComboMax];
+ 
++    AntCloudControls m_LocalControls;
++
+     SDL_TouchFingerEvent m_LastTouchDownEvent;
+     SDL_TouchFingerEvent m_LastTouchUpEvent;
+     SDL_TimerID m_LongPressTimer;
+diff --git a/app/streaming/input/keyboard.cpp b/app/streaming/input/keyboard.cpp
+index 29e218d..522aeb7 100644
+--- a/app/streaming/input/keyboard.cpp
++++ b/app/streaming/input/keyboard.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <Limelight.h>
+ #include "SDL_compat.h"
++#include "antcloudinput.h"
+ 
+ #define VK_0 0x30
+ #define VK_A 0x41
+@@ -46,6 +47,11 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
+         // Force raise all keys to ensure they aren't stuck,
+         // since we won't get their key up events.
+         raiseAllKeys();
++        if (!isCaptureActive()) showLocalControls();
++        break;
++
++    case KeyComboStreamControls:
++        showLocalControls();
+         break;
+ 
+     case KeyComboToggleFullScreen:
+@@ -182,6 +188,50 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
+     }
+ }
+ 
++void SdlInputHandler::showLocalControls()
++{
++    if (!m_LocalControls.enabled()) return;
++    setCaptureActive(false);
++    raiseAllKeys();
++    m_LocalControls.show(m_Window);
++}
++
++bool SdlInputHandler::handleLocalControlEvent(const SDL_Event& event)
++{
++    if (!m_LocalControls.handles(event)) return false;
++    // Keep local capture/stop shortcuts available while the controls own focus.
++    if (event.type == SDL_KEYDOWN && (event.key.keysym.mod & KMOD_CTRL) &&
++#ifdef Q_OS_DARWIN
++        (event.key.keysym.mod & KMOD_GUI) &&
++#else
++        (event.key.keysym.mod & KMOD_ALT) &&
++#endif
++        (event.key.keysym.mod & KMOD_SHIFT)) {
++        SDL_KeyboardEvent key = event.key;
++        handleKeyEvent(&key);
++        return true;
++    }
++    auto action = m_LocalControls.handle(event);
++    if (action == AntCloudControls::Resume) {
++        m_LocalControls.hide();
++        SDL_RaiseWindow(m_Window);
++        setCaptureActive(true);
++    }
++    else if (action == AntCloudControls::Shutdown) {
++        if (!m_LocalControls.confirmShutdown()) return true;
++        if (!m_LocalControls.requestShutdown()) {
++            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Shutdown request could not be sent",
++                "Check the AntCloud dashboard. No shutdown request was confirmed.", m_Window);
++            return true;
++        }
++    }
++    if (action == AntCloudControls::Stop || action == AntCloudControls::Shutdown) {
++        // Exit locally without GameStream quitApp. Only confirmed Shutdown reaches the provider.
++        Session::get()->requestLocalStop();
++    }
++    return true;
++}
++
+ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
+ {
+     short keyCode;
+@@ -198,7 +248,11 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
+     // Check for our special key combos
+     if ((event->state == SDL_PRESSED) &&
+             (event->keysym.mod & KMOD_CTRL) &&
++#ifdef Q_OS_DARWIN
++            (event->keysym.mod & KMOD_GUI) && // Physical Command; remote Alt.
++#else
+             (event->keysym.mod & KMOD_ALT) &&
++#endif
+             (event->keysym.mod & KMOD_SHIFT)) {
+         // First we test the SDLK combos for matches,
+         // that way we ensure that latin keyboard users
+@@ -226,6 +280,17 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
+         }
+     }
+ 
++    // Local controls remain available while released; remote keys do not.
++    if (!isCaptureActive() || !(SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS)) {
++        return;
++    }
++
++#ifdef Q_OS_DARWIN
++    // Translate only after checking local escape/toggle chords in physical keys.
++    SDL_KeyboardEvent remoteEvent = AntCloudInput::mapMacModifiers(*event);
++    event = &remoteEvent;
++#endif
++
+     // Set modifier flags
+     modifiers = 0;
+     if (event->keysym.mod & KMOD_CTRL) {
+diff --git a/app/streaming/input/mouse.cpp b/app/streaming/input/mouse.cpp
+index c5bd1fd..810383d 100644
+--- a/app/streaming/input/mouse.cpp
++++ b/app/streaming/input/mouse.cpp
+@@ -84,6 +84,9 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
+             button = BUTTON_RIGHT;
+     }
+ 
++    if (event->state == SDL_PRESSED) m_MouseButtonsDown.insert(button);
++    else m_MouseButtonsDown.remove(button);
++
+     LiSendMouseButtonEvent(event->state == SDL_PRESSED ?
+                                BUTTON_ACTION_PRESS :
+                                BUTTON_ACTION_RELEASE,
+@@ -334,3 +337,11 @@ void SdlInputHandler::updatePointerRegionLock()
+ #endif
+     }
+ }
++
++void SdlInputHandler::raiseAllMouseButtons()
++{
++    for (int button : std::as_const(m_MouseButtonsDown)) {
++        LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, button);
++    }
++    m_MouseButtonsDown.clear();
++}
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 40c1e59..3d283d1 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -1,4 +1,5 @@
+ #include "session.h"
++#include "antcloud/streambridge.h"
+ #include "settings/streamingpreferences.h"
+ #include "streaming/streamutils.h"
+ #include "backend/richpresencemanager.h"
+@@ -1733,6 +1734,16 @@ void Session::flushWindowEvents()
+     SDL_PushEvent(&flushEvent);
+ }
+ 
++void Session::requestLocalStop()
++{
++    // Stop stream is always local, regardless of the GUI's quit-host-app preference.
++    m_Preferences->quitAppAfter = false;
++    m_ShouldExit = !AntCloud::StreamBridge::enabled();
++    SDL_Event event = {};
++    event.type = SDL_QUIT;
++    SDL_PushEvent(&event);
++}
++
+ void Session::setShouldExit(bool quitHostApp)
+ {
+     // If the caller has explicitly asked us to quit the host app,
+@@ -1843,7 +1854,7 @@ void Session::exec()
+ #ifdef Q_OS_DARWIN
+     std::string windowName = QString(m_Computer->name).toStdString();
+ #else
+-    std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
++    std::string windowName = QString(m_Computer->name + " - AntCloud Native").toStdString();
+ #endif
+ 
+     m_Window = SDL_CreateWindow(windowName.c_str(),
+@@ -1995,6 +2006,8 @@ void Session::exec()
+             continue;
+         }
+ #endif
++        if (m_InputHandler->handleLocalControlEvent(event)) continue;
++
+         switch (event.type) {
+         case SDL_QUIT:
+             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+diff --git a/app/streaming/session.h b/app/streaming/session.h
+index 53ac9e0..518ecb1 100644
+--- a/app/streaming/session.h
++++ b/app/streaming/session.h
+@@ -125,6 +125,8 @@ public:
+ 
+     void setShouldExit(bool quitHostApp = false);
+ 
++    void requestLocalStop();
++
+ signals:
+     void stageStarting(QString stage);
+ 
+diff --git a/app/streaming/video/antcloudstats.h b/app/streaming/video/antcloudstats.h
+new file mode 100644
+index 0000000..1fbed53
+--- /dev/null
++++ b/app/streaming/video/antcloudstats.h
+@@ -0,0 +1,37 @@
++// AntCloud Native additions, GPL-3.0-or-later, 2026.
++#pragma once
++#include <cstdio>
++#include <cstdint>
++#include <cmath>
++
++namespace AntCloudStats {
++struct Snapshot {
++    uint32_t rttMs;
++    uint32_t totalFrames;
++    uint32_t networkDroppedFrames;
++    double receivedFps;
++    double videoMbps;
++    int width;
++    int height;
++};
++
++inline void format(const Snapshot& value, char* output, int length)
++{
++    if (length <= 0) return;
++    char rtt[32], loss[32], fps[32], bitrate[32];
++    if (value.rttMs) std::snprintf(rtt, sizeof(rtt), "%u ms", value.rttMs);
++    else std::snprintf(rtt, sizeof(rtt), "N/A");
++    if (value.totalFrames) std::snprintf(loss, sizeof(loss), "%.1f%%",
++        100.0 * value.networkDroppedFrames / value.totalFrames);
++    else std::snprintf(loss, sizeof(loss), "N/A");
++    if (value.totalFrames && std::isfinite(value.receivedFps))
++        std::snprintf(fps, sizeof(fps), "%.1f", value.receivedFps);
++    else std::snprintf(fps, sizeof(fps), "N/A");
++    if (value.totalFrames && std::isfinite(value.videoMbps) && value.videoMbps >= 0)
++        std::snprintf(bitrate, sizeof(bitrate), "%.1f Mbps", value.videoMbps);
++    else std::snprintf(bitrate, sizeof(bitrate), "N/A");
++    std::snprintf(output, static_cast<size_t>(length),
++        "RTT %s | Loss %s | %s FPS | %s | %dx%d",
++        rtt, loss, fps, bitrate, value.width, value.height);
++}
++}
+diff --git a/app/streaming/video/ffmpeg.cpp b/app/streaming/video/ffmpeg.cpp
+index c20d312..2ac4f43 100644
+--- a/app/streaming/video/ffmpeg.cpp
++++ b/app/streaming/video/ffmpeg.cpp
+@@ -1,5 +1,6 @@
+ #include <Limelight.h>
+ #include "ffmpeg.h"
++#include "antcloudstats.h"
+ #include "utils.h"
+ #include "streaming/session.h"
+ 
+@@ -2126,9 +2127,13 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+             addVideoStats(m_LastWndVideoStats, lastTwoWndStats);
+             addVideoStats(m_ActiveWndVideoStats, lastTwoWndStats);
+ 
+-            stringifyVideoStats(lastTwoWndStats,
+-                                Session::get()->getOverlayManager().getOverlayText(Overlay::OverlayDebug),
+-                                Session::get()->getOverlayManager().getOverlayMaxTextLength());
++            AntCloudStats::format({lastTwoWndStats.lastRtt, lastTwoWndStats.totalFrames,
++                                   lastTwoWndStats.networkDroppedFrames, lastTwoWndStats.receivedFps,
++                                   m_BwTracker.GetAverageMbps(),
++                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
++                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->height : m_OriginalVideoHeight},
++                                 Session::get()->getOverlayManager().getOverlayText(Overlay::OverlayDebug),
++                                 Session::get()->getOverlayManager().getOverlayMaxTextLength());
+             Session::get()->getOverlayManager().setOverlayTextUpdated(Overlay::OverlayDebug);
+         }
+ 
+diff --git a/app/streaming/video/overlaymanager.cpp b/app/streaming/video/overlaymanager.cpp
+index ab1da16..41488d0 100644
+--- a/app/streaming/video/overlaymanager.cpp
++++ b/app/streaming/video/overlaymanager.cpp
+@@ -10,7 +10,7 @@ OverlayManager::OverlayManager() :
+     memset(m_Overlays, 0, sizeof(m_Overlays));
+ 
+     m_Overlays[OverlayType::OverlayDebug].color = {0xD0, 0xD0, 0x00, 0xFF};
+-    m_Overlays[OverlayType::OverlayDebug].fontSize = 20;
++    m_Overlays[OverlayType::OverlayDebug].fontSize = 28;
+ 
+     m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xCC, 0x00, 0x00, 0xFF};
+     m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 36;
+diff --git a/setup-deps.py b/setup-deps.py
+index b713ee2..41f86d4 100644
+--- a/setup-deps.py
++++ b/setup-deps.py
+@@ -12,7 +12,7 @@ TAG = "v19"
+ def get_platform_config():
+     system = platform.system()
+     if system == "Darwin":
+-        return "mac", "macos-universal.zip"
++        return "mac", "macOS-universal.zip"
+     if system == "Linux":
+         return "steamlink", "steamlink.zip"
+ 
+diff --git a/tests/antcloud/controls.pro b/tests/antcloud/controls.pro
+new file mode 100644
+index 0000000..2b8bb4c
+--- /dev/null
++++ b/tests/antcloud/controls.pro
+@@ -0,0 +1,17 @@
++QT += core testlib
++CONFIG += console testcase c++17
++CONFIG -= app_bundle
++INCLUDEPATH += ../../app ../../app/streaming/input
++SOURCES += controls_test.cpp
++unix:!macx {
++    CONFIG += link_pkgconfig
++    PKGCONFIG += sdl2 SDL2_ttf
++}
++macx {
++    INCLUDEPATH += $$PWD/../../libs/mac/include $$PWD/../../libs/mac/include/SDL2
++    LIBS += -L$$PWD/../../libs/mac/lib -lSDL2 -lSDL2_ttf
++}
++
++macx {
++    QMAKE_RPATHDIR += $$PWD/../../libs/mac/lib
++}
+diff --git a/tests/antcloud/controls_test.cpp b/tests/antcloud/controls_test.cpp
+new file mode 100644
+index 0000000..b101444
+--- /dev/null
++++ b/tests/antcloud/controls_test.cpp
+@@ -0,0 +1,57 @@
++#include "antcloudcontrols.h"
++#include <QtTest>
++#include <QFile>
++#include <QFileInfo>
++#include <QDir>
++
++QByteArray Path::readDataFile(QString) {
++    QFile file(QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("../../app/ModeSeven.ttf"));
++    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
++}
++class Receiver : public QObject {
++    Q_OBJECT
++public:
++    int requests = 0;
++public slots:
++    void shutdown() { ++requests; }
++};
++class ControlsTest : public QObject {
++    Q_OBJECT
++private slots:
++    void localEventsAndExplicitShutdown() {
++        QVERIFY(SDL_Init(SDL_INIT_VIDEO) == 0); QVERIFY(TTF_Init() == 0);
++        auto stream = SDL_CreateWindow("test",0,0,1280,720,SDL_WINDOW_HIDDEN); QVERIFY(stream);
++        Receiver receiver;
++        {
++            AntCloudControls controls;
++            QVERIFY(!controls.enabled()); QVERIFY(!controls.show(stream));
++            AntCloud::StreamBridge::install(&receiver);
++            QVERIFY(controls.enabled()); QVERIFY(controls.show(stream));
++            SDL_Window* panel = nullptr;
++            for (Uint32 id=1;id<32;++id) { auto item=SDL_GetWindowFromID(id); if(item && item!=stream) panel=item; }
++            QVERIFY(panel);
++            SDL_Event event{}; event.type=SDL_MOUSEBUTTONDOWN;
++            event.button.windowID=SDL_GetWindowID(stream); QVERIFY(!controls.handles(event));
++            event.button.windowID=SDL_GetWindowID(panel); event.button.button=SDL_BUTTON_LEFT;
++            QVERIFY(controls.handles(event));
++            // A click is only a candidate action; confirmation is required by the input handler.
++            auto hit=[&](int x,int end) {
++                event.type=SDL_MOUSEBUTTONDOWN; event.button.x=x; event.button.y=70; controls.handle(event);
++                event.type=SDL_MOUSEBUTTONUP; event.button.x=end; return controls.handle(event);
++            };
++            QCOMPARE(hit(80,80),AntCloudControls::Resume);
++            QCOMPARE(hit(300,300),AntCloudControls::Stop);
++            QCOMPARE(hit(520,520),AntCloudControls::Shutdown);
++            QCOMPARE(hit(300,520),AntCloudControls::None);
++            QCOMPARE(receiver.requests,0);
++            event.type=SDL_KEYDOWN; event.key.windowID=SDL_GetWindowID(panel); event.key.keysym.sym=SDLK_ESCAPE;
++            QVERIFY(controls.handles(event)); QCOMPARE(controls.handle(event),AntCloudControls::Resume);
++            QVERIFY(controls.requestShutdown());
++            QTRY_COMPARE(receiver.requests,1);
++            AntCloud::StreamBridge::install(nullptr);
++        }
++        SDL_DestroyWindow(stream); TTF_Quit(); SDL_Quit();
++    }
++};
++QTEST_GUILESS_MAIN(ControlsTest)
++#include "controls_test.moc"
+diff --git a/tests/antcloud/input_stats.pro b/tests/antcloud/input_stats.pro
+new file mode 100644
+index 0000000..8890292
+--- /dev/null
++++ b/tests/antcloud/input_stats.pro
+@@ -0,0 +1,12 @@
++QT += core
++CONFIG += console c++17
++CONFIG -= app_bundle
++INCLUDEPATH += ../../app ../../app/streaming/input ../../app/streaming/video
++SOURCES += input_stats_test.cpp
++unix:!macx {
++    CONFIG += link_pkgconfig
++    PKGCONFIG += sdl2
++}
++macx {
++    INCLUDEPATH += $$PWD/../../libs/mac/include/SDL2
++}
+diff --git a/tests/antcloud/input_stats_test.cpp b/tests/antcloud/input_stats_test.cpp
+new file mode 100644
+index 0000000..29e7785
+--- /dev/null
++++ b/tests/antcloud/input_stats_test.cpp
+@@ -0,0 +1,52 @@
++#include "antcloudinput.h"
++#include "antcloudstats.h"
++#include <cassert>
++#include <string>
++#include <limits>
++
++int main()
++{
++    SDL_KeyboardEvent event{};
++    event.type = SDL_KEYDOWN;
++    event.state = SDL_PRESSED;
++    event.keysym.scancode = SDL_SCANCODE_LGUI;
++    event.keysym.mod = KMOD_LGUI | KMOD_RCTRL | KMOD_CAPS;
++    auto remote = AntCloudInput::mapMacModifiers(event);
++    assert(remote.keysym.scancode == SDL_SCANCODE_LALT);
++    assert(remote.keysym.mod == (KMOD_LALT | KMOD_RCTRL | KMOD_CAPS));
++    assert(remote.state == event.state && remote.type == event.type);
++    assert(event.keysym.scancode == SDL_SCANCODE_LGUI); // Never mutate physical state.
++
++    const SDL_Scancode physical[] = {SDL_SCANCODE_RGUI, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT, SDL_SCANCODE_LCTRL, SDL_SCANCODE_F1};
++    const SDL_Scancode expected[] = {SDL_SCANCODE_RALT, SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI, SDL_SCANCODE_LCTRL, SDL_SCANCODE_F1};
++    for (int i = 0; i < 5; ++i) {
++        event.type = SDL_KEYUP;
++        event.state = SDL_RELEASED;
++        event.keysym.scancode = physical[i];
++        remote = AntCloudInput::mapMacModifiers(event);
++        assert(remote.keysym.scancode == expected[i]);
++        assert(remote.state == SDL_RELEASED);
++    }
++    // Both sides together and all unaffected flags survive the permutation.
++    event.keysym.mod = KMOD_ALT | KMOD_GUI | KMOD_CTRL | KMOD_SHIFT | KMOD_NUM;
++    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == event.keysym.mod);
++    event.keysym.scancode = SDL_SCANCODE_A;
++    event.keysym.mod = KMOD_LCTRL;
++    assert(AntCloudInput::mapMacModifiers(event).keysym.scancode == SDL_SCANCODE_A);
++    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_LCTRL);
++    event.keysym.mod = KMOD_RALT;
++    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_RGUI);
++
++    char text[200];
++    AntCloudStats::format({32, 120, 3, 58.5, 5.8, 1440, 900}, text, sizeof(text));
++    assert(std::string(text) == "RTT 32 ms | Loss 2.5% | 58.5 FPS | 5.8 Mbps | 1440x900");
++    AntCloudStats::format({0, 0, 0, 0, 0, 1280, 720}, text, sizeof(text));
++    assert(std::string(text).find("RTT N/A | Loss N/A") == 0);
++    assert(std::string(text).find("N/A FPS | N/A") != std::string::npos);
++    char tiny[5] = {};
++    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080}, tiny, sizeof(tiny));
++    assert(tiny[4] == '\0');
++    AntCloudStats::format({0, 1, 0, std::numeric_limits<double>::quiet_NaN(),
++        std::numeric_limits<double>::infinity(), 1280, 720}, text, sizeof(text));
++    assert(std::string(text).find("N/A FPS | N/A") != std::string::npos);
++}
+diff --git a/tests/antcloud/protocol.pro b/tests/antcloud/protocol.pro
+new file mode 100644
+index 0000000..14dbe71
+--- /dev/null
++++ b/tests/antcloud/protocol.pro
+@@ -0,0 +1,5 @@
++QT += core network
++CONFIG += console c++17
++CONFIG -= app_bundle
++INCLUDEPATH += ../../app
++SOURCES += protocol_test.cpp
+diff --git a/tests/antcloud/protocol_test.cpp b/tests/antcloud/protocol_test.cpp
+new file mode 100644
+index 0000000..383058a
+--- /dev/null
++++ b/tests/antcloud/protocol_test.cpp
+@@ -0,0 +1,49 @@
++#include "antcloud/protocol.h"
++#include <QCoreApplication>
++#include <cassert>
++
++int main(int argc, char** argv) {
++    QCoreApplication app(argc, argv);
++    using namespace AntCloud;
++    assert(validToken("abc.def-123"));
++    assert(!validToken("abc\nsecret"));
++    assert(!validToken(QString(16385, 'a')));
++    assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"}}}}) == 1080);
++    assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", 1080}}}}) == 0);
++    assert(!connected({{"connected", "true"}}));
++    assert(!connected({{"connected", 1}}));
++    assert(connected({{"connected", true}}));
++    assert(pinAccepted({{"message", "success"}, {"data", QJsonObject{{"status", true}}}}));
++    assert(!pinAccepted({{"message", "success"}, {"data", QJsonObject{{"status", "true"}}}}));
++    assert(vmAddress({{"vmip", "192.0.2.10"}}) == "192.0.2.10");
++    assert(vmAddress({{"vmip", "127.0.0.1"}}).isEmpty());
++    assert(vmAddress({{"vmip", "0.0.0.0"}}).isEmpty());
++    assert(vmAddress({{"vmip", "224.0.0.1"}}).isEmpty());
++    assert(vmAddress({{"vmip", "https://example.com"}}).isEmpty());
++    StreamSettings s;
++    assert(s.isValid());
++    assert(s.providerSpec() == "720 6000 60 10");
++    s.width = 1440; s.height = 900;
++    assert(s.isValid() && s.preset() == 1080);
++    s.width = 1440; s.height = 901;
++    assert(!s.isValid());
++    s = {}; s.fps = 61;
++    assert(!s.isValid());
++    s = {}; s.bitrate = 40001;
++    assert(!s.isValid());
++    auto frame = parseFrame("42[\"new_connection\",{\"clients\":2}]");
++    assert(frame.kind == Frame::Event && frame.name == "new_connection");
++    assert(frame.value.toObject().value("clients").toInt() == 2);
++    frame = parseFrame("427[\"status\",\"done\"]");
++    assert(frame.kind == Frame::Event && frame.ackId == "7" && frame.value == "done");
++    assert(parseFrame("2").kind == Frame::Ping);
++    assert(parseFrame("40{\"sid\":\"hidden\"}").kind == Frame::NamespaceReady);
++    assert(parseFrame("42[false,\"bad\"]").kind == Frame::Invalid);
++    assert(parseFrame(QString(65537, 'x')).kind == Frame::Invalid);
++    auto hello = parseFrame("0{\"pingInterval\":25000,\"pingTimeout\":20000}");
++    assert(hello.kind == Frame::Hello && hello.heartbeatMs == 45000);
++    assert(parseFrame("0{\"pingInterval\":-1,\"pingTimeout\":20000}").kind == Frame::Invalid);
++    assert(parseFrame("0{\"pingInterval\":\"25000\",\"pingTimeout\":20000}").kind == Frame::Invalid);
++    assert(eventPacket("closestream") == "42[\"closestream\"]");
++    assert(eventPacket("control", "video") == "42[\"control\",\"video\"]");
++}
+diff --git a/tests/antcloud/provider_test.cpp b/tests/antcloud/provider_test.cpp
+new file mode 100644
+index 0000000..a49fd4e
+--- /dev/null
++++ b/tests/antcloud/provider_test.cpp
+@@ -0,0 +1,201 @@
++#include "antcloud/providerworker.h"
++#include "antcloud/streambridge.h"
++#include <QtTest>
++#include <QWebSocketServer>
++#include <QTcpServer>
++#include <QUrlQuery>
++#include <atomic>
++
++using namespace AntCloud;
++
++class Fixture : public QObject {
++    Q_OBJECT
++public:
++    QTcpServer* http = nullptr;
++    QWebSocketServer* web = nullptr;
++    QWebSocket* peer = nullptr;
++    std::atomic<int> lookups{0}, checks{0}, pins{0}, controls{0}, shutdowns{0}, pongs{0};
++    std::atomic<bool> ready{false}, wrongAuth{false}, wrongQuery{false}, malformed{false};
++    QString api, stream;
++public slots:
++    void initialize() {
++        http = new QTcpServer(this);
++        QVERIFY(http->listen(QHostAddress::LocalHost));
++        api = QString("http://127.0.0.1:%1").arg(http->serverPort());
++        web = new QWebSocketServer("test", QWebSocketServer::NonSecureMode, this);
++        QVERIFY(web->listen(QHostAddress::LocalHost));
++        stream = QString("ws://127.0.0.1:%1/socket.io/").arg(web->serverPort());
++        connect(http, &QTcpServer::newConnection, this, [this] {
++            while (http->hasPendingConnections()) {
++                auto socket = http->nextPendingConnection();
++                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
++                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
++                    auto bytes = socket->property("bytes").toByteArray() + socket->readAll();
++                    socket->setProperty("bytes", bytes);
++                    const int split = bytes.indexOf("\r\n\r\n");
++                    if (split < 0) return;
++                    const auto header = bytes.left(split);
++                    QRegularExpression length("Content-Length: ([0-9]+)", QRegularExpression::CaseInsensitiveOption);
++                    const auto match = length.match(QString::fromUtf8(header));
++                    const int size = match.hasMatch() ? match.captured(1).toInt() : 0;
++                    if (bytes.size() - split - 4 < size || socket->property("handled").toBool()) return;
++                    socket->setProperty("handled", true);
++                    const auto path = header.split(' ').value(1);
++                    int status = 200;
++                    QJsonObject response;
++                    if (path == "/api/users/login") {
++                        const auto body = QJsonDocument::fromJson(bytes.mid(split + 4, size)).object();
++                        if (body.value("email") != "test@example.invalid" || body.value("password") != "fixture-password") wrongAuth = true;
++                        response = {{"token", "fixture.access.token"}, {"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"}}}};
++                    } else {
++                        if (!header.contains("Authorization: JWT fixture.access.token")) wrongAuth = true;
++                        if (path == "/api/vm/getVmIp") { ++lookups; response = {{"vmip", "192.0.2.10"}}; }
++                        else if (path == "/api/vm/checkConnectionStatus") {
++                            ++checks;
++                            status = ready ? 200 : 400;
++                            response = {{"connected", ready.load()}};
++                            if (malformed) response = {{"connected", "true"}};
++                        } else if (path == "/api/vm/vmauth") {
++                            ++pins;
++                            const auto body = QJsonDocument::fromJson(bytes.mid(split + 4, size)).object();
++                            if (body.value("pin") != "1234") wrongAuth = true;
++                            response = {{"message", "success"}, {"data", QJsonObject{{"status", true}}}};
++                        } else if (path == "/api/users/me") response = {{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"}}}};
++                        else status = 404;
++                    }
++                    const auto payload = QJsonDocument(response).toJson(QJsonDocument::Compact);
++                    socket->write("HTTP/1.1 " + QByteArray::number(status) + " Test\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
++                    socket->disconnectFromHost();
++                });
++            }
++        });
++        connect(web, &QWebSocketServer::newConnection, this, [this] {
++            peer = web->nextPendingConnection();
++            auto query = QUrlQuery(peer->requestUrl());
++            if (query.queryItemValue("token") != "fixture.access.token"
++                || query.queryItemValue("connection") != "mobile"
++                || query.queryItemValue("stream") != "720 6000 60 10") wrongQuery = true;
++            connect(peer, &QWebSocket::textMessageReceived, this, [this](const QString& packet) {
++                if (packet == "40") {
++                    peer->sendTextMessage("40{\"sid\":\"fixture\"}");
++                    peer->sendTextMessage("42[\"status\",\"starting\"]");
++                    peer->sendTextMessage("42[\"status\",\"done\"]");
++                    peer->sendTextMessage("42[\"new_connection\",{\"clients\":2}]");
++                } else if (packet == "3") ++pongs;
++                else if (packet == "42[\"control\",\"video\"]") ++controls;
++                else if (packet == "42[\"closestream\"]") ++shutdowns;
++            });
++            peer->sendTextMessage("0{\"pingInterval\":1000,\"pingTimeout\":2000}");
++            auto timer = new QTimer(peer); timer->setInterval(100);
++            connect(timer, &QTimer::timeout, peer, [this] {
++                if (peer && peer->state() == QAbstractSocket::ConnectedState) peer->sendTextMessage("2");
++            });
++            timer->start();
++        });
++    }
++    void inactive() { if (peer) peer->sendTextMessage("42[\"inactive\",\"videonotstarting\"]"); }
++};
++
++namespace AntCloud {
++class ProviderWorkerTest : public QObject {
++    Q_OBJECT
++    QThread serverThread, workerThread;
++    Fixture* fixture = nullptr;
++    ProviderWorker* worker = nullptr;
++private slots:
++    void init() {
++        fixture = new Fixture;
++        fixture->moveToThread(&serverThread);
++        connect(&serverThread, &QThread::finished, fixture, &QObject::deleteLater);
++        serverThread.start();
++        QMetaObject::invokeMethod(fixture, "initialize", Qt::BlockingQueuedConnection);
++        worker = new ProviderWorker;
++        worker->moveToThread(&workerThread);
++        connect(&workerThread, &QThread::finished, worker, &QObject::deleteLater);
++        workerThread.start();
++        QMetaObject::invokeMethod(worker, [this] {
++            worker->initialize();
++            worker->m_Api = QUrl(fixture->api); worker->m_Stream = QUrl(fixture->stream);
++        }, Qt::BlockingQueuedConnection);
++        QSignalSpy account(worker, &ProviderWorker::account);
++        QMetaObject::invokeMethod(worker, "login", Qt::QueuedConnection,
++            Q_ARG(QString, "test@example.invalid"), Q_ARG(QString, "fixture-password"), Q_ARG(bool, false));
++        QVERIFY(account.wait(3000));
++        QCOMPARE(account.first()[0].toBool(), true);
++        QVERIFY(!fixture->wrongAuth);
++    }
++    void cleanup() {
++        StreamBridge::install(nullptr); StreamBridge::setActive(false);
++        QMetaObject::invokeMethod(worker, "stop", Qt::BlockingQueuedConnection);
++        workerThread.quit(); QVERIFY(workerThread.wait(3000));
++        serverThread.quit(); QVERIFY(serverThread.wait(3000));
++    }
++    void nativeStartsBeforeReadiness() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), connected(worker, &ProviderWorker::nativeReady);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QTRY_VERIFY_WITH_TIMEOUT(fixture->checks >= 1, 3000);
++        QCOMPARE(connected.count(), 0); QCOMPARE(fixture->controls.load(), 0);
++        QVERIFY(!fixture->wrongQuery);
++        fixture->ready = true;
++        QVERIFY(connected.wait(4000));
++        QTRY_COMPARE_WITH_TIMEOUT(fixture->controls.load(), 1, 3000);
++        QCOMPARE(fixture->lookups.load(), 2);
++        QVERIFY(!fixture->wrongAuth);
++    }
++    void heartbeatSurvivesBlockedGuiAndShutdownOnce() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        StreamBridge::install(worker);
++        const int before = fixture->pongs.load();
++        QThread::msleep(650); // Main event loop is deliberately blocked like the SDL streaming loop.
++        QVERIFY(fixture->pongs.load() >= before + 4);
++        QVERIFY(StreamBridge::shutdown()); QVERIFY(StreamBridge::shutdown());
++        QMetaObject::invokeMethod(worker, "stopAfterStream", Qt::QueuedConnection);
++        QTRY_COMPARE_WITH_TIMEOUT(fixture->shutdowns.load(), 1, 2000);
++    }
++    void disconnectSendsNoShutdown() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), ended(worker, &ProviderWorker::ended);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, "stop", Qt::QueuedConnection);
++        QVERIFY(ended.wait(2000)); QCOMPARE(fixture->shutdowns.load(), 0);
++    }
++    void pairingSubmittedOnlyOnce() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, "pair", Qt::QueuedConnection, Q_ARG(QString,"1234"));
++        QMetaObject::invokeMethod(worker, "pair", Qt::QueuedConnection, Q_ARG(QString,"1234"));
++        QTRY_COMPARE_WITH_TIMEOUT(fixture->pins.load(), 1, 2000);
++    }
++    void inactiveStopsPromptly() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), ended(worker, &ProviderWorker::ended);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(fixture, "inactive", Qt::QueuedConnection);
++        QVERIFY(ended.wait(2000)); QVERIFY(ended.first()[0].toString().contains("video did not start"));
++    }
++    void malformedReadinessNeverStartsVideo() {
++        fixture->ready = true; fixture->malformed = true;
++        QSignalSpy ended(worker, &ProviderWorker::ended);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(ended.wait(3000)); QCOMPARE(fixture->controls.load(), 0);
++    }
++    void accountLimitRejectsBeforeSocket() {
++        QSignalSpy ended(worker, &ProviderWorker::ended);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,3840), Q_ARG(int,2160), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(ended.wait(2000)); QCOMPARE(fixture->lookups.load(), 0);
++    }
++};
++}
++QTEST_GUILESS_MAIN(AntCloud::ProviderWorkerTest)
++#include "provider_test.moc"
+diff --git a/tests/antcloud/tests.pro b/tests/antcloud/tests.pro
+new file mode 100644
+index 0000000..3793b24
+--- /dev/null
++++ b/tests/antcloud/tests.pro
+@@ -0,0 +1,19 @@
++QT += core network websockets testlib
++CONFIG += console testcase c++17
++CONFIG -= app_bundle
++DEFINES += ANTCLOUD_TESTING
++INCLUDEPATH += ../../app
++SOURCES += provider_test.cpp ../../app/antcloud/providerworker.cpp ../../app/antcloud/tokenstore.cpp
++HEADERS += ../../app/antcloud/providerworker.h
++unix:!macx {
++    CONFIG += link_pkgconfig
++    PKGCONFIG += sdl2
++}
++macx {
++    INCLUDEPATH += $$PWD/../../libs/mac/include/SDL2
++    LIBS += -L$$PWD/../../libs/mac/lib -lSDL2 -framework Security
++}
++
++macx {
++    QMAKE_RPATHDIR += $$PWD/../../libs/mac/lib
++}
+diff --git a/tests/antcloud/ui.pro b/tests/antcloud/ui.pro
+new file mode 100644
+index 0000000..1b7a380
+--- /dev/null
++++ b/tests/antcloud/ui.pro
+@@ -0,0 +1,4 @@
++QT += core gui quick qml quickcontrols2 testlib
++CONFIG += console testcase c++17
++CONFIG -= app_bundle
++SOURCES += ui_test.cpp
+diff --git a/tests/antcloud/ui_test.cpp b/tests/antcloud/ui_test.cpp
+new file mode 100644
+index 0000000..46b0592
+--- /dev/null
++++ b/tests/antcloud/ui_test.cpp
+@@ -0,0 +1,136 @@
++#include <QtTest>
++#include <QQuickWindow>
++#include <QQuickItem>
++#include <QQmlApplicationEngine>
++#include <QQmlContext>
++#include <QQuickStyle>
++#include <QPalette>
++#include <QFileInfo>
++#include <QDir>
++// UI fixtures never contact AntCloud and are not linked into the app.
++class UiController : public QObject {
++    Q_OBJECT
++    Q_PROPERTY(bool signedIn MEMBER signedIn NOTIFY changed)
++    Q_PROPERTY(bool busy MEMBER busy NOTIFY changed)
++    Q_PROPERTY(bool active MEMBER active NOTIFY changed)
++    Q_PROPERTY(bool fullscreen MEMBER fullscreen NOTIFY changed)
++    Q_PROPERTY(bool relativeMouse MEMBER relativeMouse NOTIFY changed)
++    Q_PROPERTY(bool showStats MEMBER showStats NOTIFY changed)
++    Q_PROPERTY(QString phase MEMBER phase NOTIFY changed)
++    Q_PROPERTY(QString detail MEMBER detail NOTIFY changed)
++    Q_PROPERTY(QString error MEMBER error NOTIFY changed)
++    Q_PROPERTY(QString notice MEMBER notice NOTIFY changed)
++    Q_PROPERTY(int elapsed MEMBER elapsed NOTIFY changed)
++    Q_PROPERTY(int resolutionLimit MEMBER resolutionLimit NOTIFY changed)
++    Q_PROPERTY(int resolutionIndex MEMBER resolutionIndex NOTIFY changed)
++    Q_PROPERTY(int fpsIndex MEMBER fpsIndex NOTIFY changed)
++    Q_PROPERTY(int bitrate MEMBER bitrate NOTIFY changed)
++public:
++    bool signedIn=false, busy=false, active=false, fullscreen=true, relativeMouse=true, showStats=true;
++    QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice;
++    int elapsed=83, resolutionLimit=1080, resolutionIndex=0, fpsIndex=1, bitrate=6000, loginCalls=0, shutdownCalls=0;
++    Q_INVOKABLE void initialize(QQuickWindow*) {}
++    Q_INVOKABLE void login(QString, QString, bool) { ++loginCalls; signedIn=true; detail="Your Windows VM is ready to connect."; emit changed(); }
++    Q_INVOKABLE void signOut() { signedIn=false; emit changed(); }
++    Q_INVOKABLE void start() { active=busy=true; phase="booting"; detail="Waiting for the VM to boot. This can take a minute or two."; emit changed(); }
++    Q_INVOKABLE void disconnectStream() { active=busy=false; phase="idle"; emit changed(); }
++    Q_INVOKABLE void shutdown() { ++shutdownCalls; disconnectStream(); }
++    Q_INVOKABLE void exportDiagnostics(QUrl) {}
++    Q_INVOKABLE void clearDiagnostics() {}
++    void reset() { signedIn=busy=active=false; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); loginCalls=shutdownCalls=0; emit changed(); }
++signals:
++    void changed();
++};
++class UiTest : public QObject {
++    Q_OBJECT
++    UiController controller;
++    QQmlApplicationEngine engine;
++    QQuickWindow* window=nullptr;
++private slots:
++    void initTestCase() {
++#ifdef Q_OS_MACOS
++        QQuickStyle::setStyle("macOS");
++#else
++        QQuickStyle::setStyle("Basic");
++#endif
++        engine.setInitialProperties({{"controller", QVariant::fromValue(static_cast<QObject*>(&controller))}});
++        engine.load(QUrl::fromLocalFile(QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir().filePath("../../app/gui/AntCloudMain.qml")));
++        QVERIFY(!engine.rootObjects().isEmpty());
++        window=qobject_cast<QQuickWindow*>(engine.rootObjects().first()); QVERIFY(window);
++        QVERIFY(QTest::qWaitForWindowExposed(window));
++    }
++    void init() {
++        auto dialog=window->findChild<QObject*>("shutdownDialog");
++        if(dialog) QMetaObject::invokeMethod(dialog,"close");
++        controller.reset(); window->setWidth(860); window->setHeight(740); window->show(); }
++    void keyboardLoginClearsPassword() {
++        auto email=window->findChild<QQuickItem*>("emailField"), password=window->findChild<QQuickItem*>("passwordField");
++        QVERIFY(email && password);
++        email->forceActiveFocus(); email->setProperty("text", "test@example.invalid");
++        QTest::keyClick(window, Qt::Key_Return);
++        QCOMPARE(window->activeFocusItem(), password);
++        password->setProperty("text", "fixture-password"); QTest::keyClick(window, Qt::Key_Return);
++        QCOMPARE(controller.loginCalls,1); QCOMPARE(password->property("text").toString(),QString());
++    }
++    void busyBlocksConnect() {
++        controller.signedIn=true; controller.busy=true; controller.active=true; controller.phase="booting"; emit controller.changed();
++        auto button=window->findChild<QObject*>("connectButton"); QVERIFY(button);
++        QTRY_COMPARE(button->property("enabled").toBool(),false);
++    }
++    void returnCancelsShutdown() {
++        controller.signedIn=true; controller.active=true; controller.busy=true; controller.phase="booting"; emit controller.changed();
++        auto dialog=window->findChild<QObject*>("shutdownDialog"); QVERIFY(dialog);
++        QVERIFY(QMetaObject::invokeMethod(dialog,"open"));
++        QTest::qWait(200); QTest::keyClick(window,Qt::Key_Return);
++        QTRY_COMPARE(dialog->property("visible").toBool(),false);
++        QCOMPARE(controller.shutdownCalls,0);
++    }
++    void deliberateShutdownRequiresSelection() {
++        controller.signedIn=true; controller.active=true; controller.busy=true; controller.phase="booting"; emit controller.changed();
++        auto dialog=window->findChild<QObject*>("shutdownDialog");
++        QVERIFY(QMetaObject::invokeMethod(dialog,"open")); QTest::qWait(200);
++        auto cancel=window->findChild<QQuickItem*>("cancelShutdown"); QVERIFY(cancel);
++        QCOMPARE(window->activeFocusItem(),cancel);
++        QTest::keyClick(window,Qt::Key_Tab);
++        auto confirm=window->findChild<QQuickItem*>("confirmShutdown"); QVERIFY(confirm);
++        QCOMPARE(window->activeFocusItem(),confirm);
++        QTest::keyClick(window,Qt::Key_Return);
++        QCOMPARE(controller.shutdownCalls,1);
++    }
++    void snapshots_data() {
++        QTest::addColumn<int>("width"); QTest::addColumn<bool>("dark"); QTest::addColumn<QString>("state");
++        QTest::newRow("login-600-light") << 600 << false << "login";
++        QTest::newRow("login-860-light") << 860 << false << "login";
++        QTest::newRow("ready-860-light") << 860 << false << "ready";
++        QTest::newRow("boot-600-light") << 600 << false << "booting";
++        QTest::newRow("boot-860-dark") << 860 << true << "booting";
++        QTest::newRow("error-1100-dark") << 1100 << true << "error";
++    }
++    void snapshots() {
++        QFETCH(int,width); QFETCH(bool,dark); QFETCH(QString,state);
++        QPalette palette;
++        palette.setColor(QPalette::Window,dark?QColor("#1c1c1e"):QColor("#f6f6f7"));
++        palette.setColor(QPalette::WindowText,dark?QColor("#f2f2f7"):QColor("#202124"));
++        palette.setColor(QPalette::Base,dark?QColor("#2c2c2e"):QColor("#ffffff"));
++        palette.setColor(QPalette::Text,palette.color(QPalette::WindowText));
++        palette.setColor(QPalette::Button,palette.color(QPalette::Base));
++        palette.setColor(QPalette::ButtonText,palette.color(QPalette::WindowText));
++        palette.setColor(QPalette::Mid,dark?QColor("#72727a"):QColor("#77777d"));
++        QGuiApplication::setPalette(palette);
++        window->setWidth(width); window->setHeight(state=="booting"?840:740);
++        if(state!="login") { controller.signedIn=true; controller.detail="Your Windows VM is ready to connect."; }
++        if(state=="booting") controller.start();
++        if(state=="error") controller.error="The provider ended the session because video did not start. Check the dashboard, then retry.";
++        emit controller.changed(); QTest::qWait(200);
++        auto image=window->grabWindow(); QVERIFY(!image.isNull());
++        const QString path=qEnvironmentVariable("ANTCLOUD_SCREENSHOT_DIR");
++        if(!path.isEmpty()) QVERIFY(image.save(path+"/"+QString::fromUtf8(QTest::currentDataTag())+".png"));
++        for(auto item: window->findChildren<QQuickItem*>()) {
++            if(!item->isVisible() || item->width()<=0 || item->objectName().isEmpty()) continue;
++            const QPointF point=item->mapToScene(QPointF(0,0));
++            QVERIFY2(point.x()>=-1 && point.x()+item->width()<=width+1,qPrintable(item->objectName()));
++        }
++    }
++};
++QTEST_MAIN(UiTest)
++#include "ui_test.moc"

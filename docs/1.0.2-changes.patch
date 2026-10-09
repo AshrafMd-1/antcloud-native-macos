@@ -1,0 +1,1322 @@
+diff --git a/app/antcloud/controller.cpp b/app/antcloud/controller.cpp
+index e3a9414..863b8b7 100644
+--- a/app/antcloud/controller.cpp
++++ b/app/antcloud/controller.cpp
+@@ -10,14 +10,19 @@
+ 
+ namespace AntCloud {
+ namespace {
+-const QSize resolutions[] = {{1280,720}, {1920,1080}, {1440,900}, {2560,1440}, {3840,2160}};
++const QSize resolutions[] = {{1280,720}, {1920,1080}, {2560,1440}, {3840,2160}};
+ const int frameRates[] = {30,60,120};
+ }
+ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new ProviderWorker) {
+     QSettings settings;
+-    m_ResolutionIndex = qBound(0, settings.value("native/resolutionIndex", 0).toInt(), 4);
++    const int resolutionSchema = settings.value("native/resolutionSchema", 1).toInt();
++    m_ResolutionIndex = savedResolutionIndex(settings.value("native/resolutionIndex", 0).toInt(), resolutionSchema);
++    if (resolutionSchema < 2) {
++        settings.setValue("native/resolutionIndex", m_ResolutionIndex);
++        settings.setValue("native/resolutionSchema", 2);
++    }
+     m_FpsIndex = qBound(0, settings.value("native/fpsIndex", 1).toInt(), 2);
+-    m_Bitrate = qBound(2000, settings.value("native/bitrate", 6000).toInt(), 40000);
++    m_Bitrate = savedBitrate(settings.value("native/bitrate", 6000).toInt());
+     m_Fullscreen = settings.value("native/fullscreen", true).toBool();
+     m_RelativeMouse = settings.value("native/relativeMouse", true).toBool();
+     m_ShowStats = settings.value("native/showStats", true).toBool();
+@@ -40,9 +45,13 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
+         m_ProviderActive = false; finish(message);
+     });
+     connect(m_Worker, &ProviderWorker::notice, this, [this](const QString& message) { m_Notice = message; record(message); emit changed(); });
+-    connect(m_Worker, &ProviderWorker::shutdownRequested, this, [this] { record("Confirmed shutdown request sent once; final power state unverified."); });
++    connect(m_Worker, &ProviderWorker::shutdownRequested, this, [this] {
++        m_ShutdownStatus = "Shutdown requested. Check the AntCloud dashboard for the final VM power state.";
++        record("Shutdown request sent once; final power state unverified.");
++        setStage("shuttingDown", "Disconnecting after the shutdown request…");
++    });
+     m_ElapsedTimer.setInterval(1000);
+-    connect(&m_ElapsedTimer, &QTimer::timeout, this, &Controller::changed);
++    connect(&m_ElapsedTimer, &QTimer::timeout, this, &Controller::elapsedChanged);
+     m_AppTimeout.setSingleShot(true); m_AppTimeout.setInterval(30000);
+     connect(&m_AppTimeout, &QTimer::timeout, this, [this] { finish("The native host did not offer Desktop in time. Check the dashboard before retrying."); });
+     m_Thread.setObjectName("AntCloud provider"); m_Thread.start();
+@@ -50,6 +59,9 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
+ }
+ 
+ Controller::~Controller() {
++    // The seeker borrows the manager; destroy it before QObject deletes child objects.
++    if (m_Seeker) { delete m_Seeker; m_Seeker = nullptr; }
++    stopPolling();
+     StreamBridge::install(nullptr);
+     QMetaObject::invokeMethod(m_Worker, "stop", Qt::BlockingQueuedConnection);
+     m_Thread.quit(); m_Thread.wait();
+@@ -71,14 +83,16 @@ void Controller::login(QString email, QString password, bool remember) {
+ 
+ void Controller::signOut() {
+     if (busy()) return;
+-    m_Error.clear(); m_Notice.clear();
++    m_Error.clear(); m_Notice.clear(); m_ShutdownStatus.clear();
+     setStage("authenticating", "Removing your saved login…");
+     QMetaObject::invokeMethod(m_Worker, "signOut", Qt::QueuedConnection);
+ }
+ 
+ void Controller::start() {
+     if (!m_SignedIn || busy() || !m_Window) return;
+-    if (m_ResolutionIndex < 0 || m_ResolutionIndex > 4 || m_FpsIndex < 0 || m_FpsIndex > 2) return;
++    m_Error.clear(); m_Notice.clear(); m_StreamWarning.clear(); m_ShutdownStatus.clear();
++    StreamBridge::setExpectedEnd(false);
++    if (m_ResolutionIndex < 0 || m_ResolutionIndex > 3 || m_FpsIndex < 0 || m_FpsIndex > 2) { emit changed(); return; }
+     const QSize size = resolutions[m_ResolutionIndex];
+     StreamSettings spec{size.width(), size.height(), frameRates[m_FpsIndex], m_Bitrate};
+     if (!spec.isValid() || spec.preset() > m_Limit) {
+@@ -96,8 +110,8 @@ void Controller::start() {
+     m_Preferences->videoCodecConfig = StreamingPreferences::VCC_FORCE_H264; m_Preferences->enableHdr = false;
+     m_Preferences->gameOptimizations = false; m_Preferences->quitAppAfter = false;
+     m_Preferences->showPerformanceOverlay = m_ShowStats; m_Preferences->richPresence = false; m_Preferences->enableMdns = false;
+-    m_Active = true; m_ProviderActive = true; m_Computer = nullptr; m_Error.clear(); m_Notice.clear();
+-    m_Clock.start(); m_ElapsedTimer.start(); setStage("connecting", "Opening your provider session…");
++    m_Active = true; m_ProviderActive = true; m_Computer = nullptr;
++    m_Clock.start(); emit elapsedChanged(); m_ElapsedTimer.start(); setStage("connecting", "Opening your provider session…");
+     StreamBridge::setHostRequestsAllowed(true);
+     record(QString("Requested %1×%2, %3 FPS, %4 Kbps; provider preset %5.").arg(spec.width).arg(spec.height).arg(spec.fps).arg(spec.bitrate).arg(spec.preset()));
+     QMetaObject::invokeMethod(m_Worker, "start", Qt::QueuedConnection, Q_ARG(int, spec.width), Q_ARG(int, spec.height), Q_ARG(int, spec.fps), Q_ARG(int, spec.bitrate));
+@@ -105,7 +119,7 @@ void Controller::start() {
+ 
+ void Controller::findHost(const QString& address) {
+     if (!m_Active) return;
+-    setStage("host", "Native host found. Checking this Mac’s pairing…");
++    setStage("host", "VM address available. Contacting the native streaming host…");
+     if (!m_Manager) {
+         m_Manager = new ComputerManager(m_Preferences); m_Manager->setParent(this);
+         connect(m_Manager, &ComputerManager::pairingCompleted, this, [this](NvComputer* computer, const QString& error) {
+@@ -125,7 +139,7 @@ void Controller::findHost(const QString& address) {
+     m_Seeker = new ComputerSeeker(m_Manager, address, this);
+     connect(m_Seeker, &ComputerSeeker::computerFound, this, &Controller::hostFound);
+     connect(m_Seeker, &ComputerSeeker::errorTimeout, this, [this] { finish("Could not reach the native streaming host. Check the dashboard and your connection."); });
+-    m_Seeker->start(30000);
++    m_Seeker->start(qMax(1, StartupTimeoutMs - int(m_Clock.elapsed())), true);
+ }
+ 
+ void Controller::hostFound(NvComputer* computer) {
+@@ -157,14 +171,20 @@ void Controller::launchIfReady() {
+     m_AppTimeout.stop(); stopPolling();
+     m_Session = new Session(m_Computer, desktop, m_Preferences);
+     QQmlEngine::setObjectOwnership(m_Session, QQmlEngine::CppOwnership);
+-    connect(m_Session, &Session::stageStarting, this, [this](const QString&) { setStage("video", "Starting the encrypted video and audio connection…"); });
++    connect(m_Session, &Session::stageStarting, this, [this](const QString&) {
++        if (m_Active && !StreamBridge::expectedEnd()) setStage("video", "Starting the encrypted video and audio connection…");
++    });
+     connect(m_Session, &Session::stageFailed, this, [this](const QString&, int code, const QString&) {
++        if (!m_Active || StreamBridge::expectedEnd()) return;
+         m_Error = QString("Native streaming failed (error %1). Export diagnostics and check the dashboard.").arg(code); record(m_Error); emit changed();
+     });
+     connect(m_Session, &Session::displayLaunchError, this, [this](const QString&) {
++        if (!m_Active || StreamBridge::expectedEnd()) return;
+         m_Error = "The native stream could not start. Check your settings and the dashboard."; record(m_Error); emit changed();
+     });
+     connect(m_Session, &Session::connectionStarted, this, [this] {
++        if (!m_Active || StreamBridge::expectedEnd()) return;
++        m_Error.clear(); m_ElapsedTimer.stop();
+         setStage("connected", "Video connected. Use Control + Command + Shift + P for local controls.");
+         if (m_Window) m_Window->hide();
+     });
+@@ -172,8 +192,8 @@ void Controller::launchIfReady() {
+         StreamBridge::setActive(false);
+         if (m_Window) { m_Window->show(); m_Window->requestActivate(); }
+         QMetaObject::invokeMethod(m_Worker, "stopAfterStream", Qt::QueuedConnection);
+-        m_Active = false; m_ElapsedTimer.stop();
+-        setStage("idle", "Stream disconnected. The provider may apply its idle shutdown policy.");
++        m_Active = false; m_StreamWarning.clear(); m_ElapsedTimer.stop();
++        setStage("idle", "Disconnected.");
+     });
+     connect(m_Session, &Session::readyForDeletion, this, [this] {
+         if (m_Session) m_Session->deleteLater();
+@@ -188,22 +208,22 @@ void Controller::launchIfReady() {
+         m_Session->deleteLater(); m_Session = nullptr; emit changed(); return;
+     }
+     if (!m_Session->property("launchWarnings").toStringList().isEmpty())
+-        m_Notice = "The streaming engine reported a configuration warning. If video or input fails, try 720p / 60 FPS.";
++        m_StreamWarning = "Stream advisory: the engine reported a configuration warning. If video or input fails, try 720p / 60 FPS.";
+     StreamBridge::setActive(true);
+     m_Session->start();
+ }
+ 
+ void Controller::finish(const QString& message) {
+     if (!message.isEmpty()) { m_Error = message; record(message); }
+-    m_Active = false; m_ElapsedTimer.stop(); m_AppTimeout.stop();
++    m_Active = false; m_StreamWarning.clear(); m_ElapsedTimer.stop(); m_AppTimeout.stop();
+     if (m_Seeker) { delete m_Seeker; m_Seeker = nullptr; }
+     stopPolling();
+     QMetaObject::invokeMethod(m_Worker, "stop", Qt::QueuedConnection);
+     if (m_Session) m_Session->interrupt();
+-    setStage(m_Pairing ? "cancelling" : "idle", m_Pairing ? "Disconnecting. Waiting for the pairing request to finish…" : "Disconnected. Check the dashboard before starting another session.");
++    setStage(m_Pairing ? "cancelling" : "idle", m_Pairing ? "Disconnecting. Waiting for the pairing request to finish…" : (m_Error.isEmpty() ? "Disconnected." : "Disconnected. You can try connecting again."));
+ }
+ 
+-void Controller::disconnectStream() { if (m_Active) finish({}); }
++void Controller::disconnectStream() { if (m_Active) { StreamBridge::requestStop(); finish({}); } }
+ void Controller::shutdown() { if (m_Active) QMetaObject::invokeMethod(m_Worker, "shutdown", Qt::QueuedConnection); }
+ void Controller::stopPolling() { if (m_Polling) { m_Manager->stopPollingAsync(); m_Polling = false; } }
+ 
+diff --git a/app/antcloud/controller.h b/app/antcloud/controller.h
+index d1f4240..f2fc570 100644
+--- a/app/antcloud/controller.h
++++ b/app/antcloud/controller.h
+@@ -21,7 +21,9 @@ class Controller : public QObject {
+     Q_PROPERTY(QString detail READ detail NOTIFY changed)
+     Q_PROPERTY(QString error READ error NOTIFY changed)
+     Q_PROPERTY(QString notice READ notice NOTIFY changed)
+-    Q_PROPERTY(int elapsed READ elapsed NOTIFY changed)
++    Q_PROPERTY(QString streamWarning READ streamWarning NOTIFY changed)
++    Q_PROPERTY(QString shutdownStatus READ shutdownStatus NOTIFY changed)
++    Q_PROPERTY(int elapsed READ elapsed NOTIFY elapsedChanged)
+     Q_PROPERTY(int resolutionLimit READ resolutionLimit NOTIFY changed)
+     Q_PROPERTY(int resolutionIndex MEMBER m_ResolutionIndex NOTIFY settingsChanged)
+     Q_PROPERTY(int fpsIndex MEMBER m_FpsIndex NOTIFY settingsChanged)
+@@ -39,6 +41,8 @@ public:
+     QString detail() const { return m_Detail; }
+     QString error() const { return m_Error; }
+     QString notice() const { return m_Notice; }
++    QString streamWarning() const { return m_StreamWarning; }
++    QString shutdownStatus() const { return m_ShutdownStatus; }
+     int elapsed() const { return m_Clock.isValid() ? int(m_Clock.elapsed() / 1000) : 0; }
+     int resolutionLimit() const { return m_Limit; }
+     Q_INVOKABLE void initialize(QQuickWindow* window);
+@@ -52,6 +56,7 @@ public:
+ signals:
+     void changed();
+     void settingsChanged();
++    void elapsedChanged();
+ private:
+     void setStage(const QString& phase, const QString& detail);
+     void findHost(const QString& address);
+@@ -71,7 +76,7 @@ private:
+     bool m_SignedIn = false, m_Active = false, m_ProviderActive = false, m_Pairing = false, m_Polling = false;
+     bool m_Fullscreen = true, m_RelativeMouse = true, m_ShowStats = true;
+     int m_Limit = 0, m_ResolutionIndex = 0, m_FpsIndex = 1, m_Bitrate = 6000;
+-    QString m_Phase = "idle", m_Detail = "Sign in to connect to your Windows VM.", m_Error, m_Notice;
++    QString m_Phase = "idle", m_Detail = "Sign in to connect to your Windows VM.", m_Error, m_Notice, m_StreamWarning, m_ShutdownStatus;
+     QStringList m_Diagnostics;
+     QElapsedTimer m_Clock;
+     QTimer m_ElapsedTimer, m_AppTimeout;
+diff --git a/app/antcloud/protocol.h b/app/antcloud/protocol.h
+index e9d3d5f..feae59e 100644
+--- a/app/antcloud/protocol.h
++++ b/app/antcloud/protocol.h
+@@ -7,6 +7,17 @@
+ #include <QRegularExpression>
+ 
+ namespace AntCloud {
++constexpr int StartupTimeoutMs = 300000;
++inline int savedResolutionIndex(int index, int schema) {
++    if (schema < 2) {
++        if (index == 2) return 1; // Retired custom size becomes 1080p.
++        if (index == 3 || index == 4) return index - 1;
++    }
++    return index >= 0 && index <= 3 ? index : 0;
++}
++inline int savedBitrate(int bitrate) {
++    return bitrate == 3000 || bitrate == 6000 || bitrate == 12000 || bitrate == 20000 || bitrate == 40000 ? bitrate : 6000;
++}
+ inline bool validToken(const QString& token) {
+     static const QRegularExpression pattern("^[A-Za-z0-9_.~+/=-]{1,16384}$");
+     return pattern.match(token).hasMatch();
+@@ -37,7 +48,7 @@ struct StreamSettings {
+     int width = 1280, height = 720, fps = 60, bitrate = 6000;
+     int preset() const {
+         if (width == 1280 && height == 720) return 720;
+-        if ((width == 1920 && height == 1080) || (width == 1440 && height == 900)) return 1080;
++        if (width == 1920 && height == 1080) return 1080;
+         if (width == 2560 && height == 1440) return 1440;
+         if (width == 3840 && height == 2160) return 2160;
+         return 0;
+diff --git a/app/antcloud/providerworker.cpp b/app/antcloud/providerworker.cpp
+index a87ada4..5c91603 100644
+--- a/app/antcloud/providerworker.cpp
++++ b/app/antcloud/providerworker.cpp
+@@ -11,7 +11,7 @@ void ProviderWorker::initialize() {
+     Q_ASSERT(QThread::currentThread() == thread());
+     m_Network = new QNetworkAccessManager(this);
+     m_Poll = new QTimer(this); m_Poll->setInterval(2000);
+-    m_Startup = new QTimer(this); m_Startup->setSingleShot(true); m_Startup->setInterval(300000);
++    m_Startup = new QTimer(this); m_Startup->setSingleShot(true); m_Startup->setInterval(StartupTimeoutMs);
+     m_Heartbeat = new QTimer(this); m_Heartbeat->setSingleShot(true);
+     connect(m_Poll, &QTimer::timeout, this, &ProviderWorker::poll);
+     connect(m_Startup, &QTimer::timeout, this, [this] { finish("The VM did not connect within five minutes. Check the AntCloud dashboard before retrying."); });
+@@ -125,6 +125,7 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
+         emit ended("Choose supported stream settings within your account’s resolution limit."); return;
+     }
+     m_Active = true; ++m_Generation; m_Ready = false; m_Shutdown = false;
++    StreamBridge::setExpectedEnd(false);
+     m_PinSubmitted = false;
+     m_Polling = false; m_RequestPending = false; m_Namespace = false; m_Address.clear();
+     emit stage("connecting", "Opening your provider session…");
+@@ -135,13 +136,13 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
+     m_Socket->setMaxAllowedIncomingFrameSize(65536);
+     m_Socket->setReadBufferSize(65536);
+     connect(m_Socket, &QWebSocket::textMessageReceived, this, &ProviderWorker::receive);
+-    connect(m_Socket, &QWebSocket::disconnected, this, [this] { if (m_Active) finish("The provider session ended. Check the dashboard before reconnecting."); });
++    connect(m_Socket, &QWebSocket::disconnected, this, [this] { if (m_Active) finish(m_Shutdown ? QString() : QString("The provider session ended. Check the dashboard before reconnecting.")); });
+     #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+     connect(m_Socket, &QWebSocket::errorOccurred, this,
+ #else
+     connect(m_Socket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error), this,
+ #endif
+-        [this](QAbstractSocket::SocketError) { if (m_Active) finish("Could not keep the provider connection open. Check your connection and the dashboard."); });
++        [this](QAbstractSocket::SocketError) { if (m_Active) finish(m_Shutdown ? QString() : QString("Could not keep the provider connection open. Check your connection and the dashboard.")); });
+ #ifdef ANTCLOUD_TESTING
+     QUrl url(m_Stream);
+ #else
+@@ -176,7 +177,10 @@ void ProviderWorker::receive(const QString& packet) {
+         return;
+     case Frame::NamespaceReady:
+         m_Namespace = true; emit stage("booting", "Waiting for the VM to boot. This can take a minute or two."); return;
+-    case Frame::Closed: case Frame::NamespaceError:
++    case Frame::Closed:
++        if (m_Shutdown) { finish({}); return; }
++        [[fallthrough]];
++    case Frame::NamespaceError:
+         finish("The provider ended or rejected this session. Check the dashboard."); return;
+     case Frame::Invalid:
+         finish("The provider sent an unsupported message. Export diagnostics before retrying."); return;
+@@ -186,6 +190,7 @@ void ProviderWorker::receive(const QString& packet) {
+     if (!m_Namespace) return;
+     if (!frame.ackId.isEmpty()) send("43" + frame.ackId + "[]");
+     if (frame.name == "inactive" || frame.name == "reset" || frame.name == "gamequit") {
++        if (m_Shutdown) { finish({}); return; }
+         finish(frame.value == "videonotstarting" ? "The provider ended the session because video did not start. Check the dashboard, then retry." : "The provider ended the session. Check the dashboard for the VM state.");
+     } else if (frame.name == "status") {
+         const QString status = frame.value.isString() ? frame.value.toString() : frame.value.toObject().value("status").toString();
+@@ -265,7 +270,7 @@ void ProviderWorker::finish(const QString& message) {
+     m_Poll->stop(); m_Startup->stop(); m_Heartbeat->stop();
+     clearRequests(true); m_RequestPending = false; m_Polling = false; m_Namespace = false;
+     if (m_Socket) m_Socket->close();
+-    StreamBridge::interrupt(); emit ended(message);
++    StreamBridge::interrupt(); emit ended(StreamBridge::expectedEnd() ? QString() : message);
+ }
+ 
+ void ProviderWorker::stop() { finish({}); }
+@@ -278,12 +283,15 @@ void ProviderWorker::shutdown() {
+         return;
+     }
+     m_Shutdown = true;
++    // Cancel pending readiness replies so they cannot launch video after shutdown.
++    ++m_Generation; m_Poll->stop(); m_Startup->stop();
++    clearRequests(true); m_RequestPending = false;
+     // Send once. Socket write acceptance is not a confirmed VM power state.
+     if (!send(eventPacket("closestream"))) {
+         finish("The shutdown request could not be sent. Check the dashboard; it was not retried."); return;
+     }
++    StreamBridge::setExpectedEnd(true);
+     emit shutdownRequested();
+-    emit notice("Shutdown requested. Check the AntCloud dashboard for the final VM power state.");
+     const int generation = m_Generation;
+     QTimer::singleShot(1000, this, [this, generation] { if (generation == m_Generation) finish({}); });
+ }
+diff --git a/app/antcloud/streambridge.h b/app/antcloud/streambridge.h
+index afb6d5a..0998473 100644
+--- a/app/antcloud/streambridge.h
++++ b/app/antcloud/streambridge.h
+@@ -11,6 +11,15 @@ class StreamBridge {
+ public:
+     static void install(QObject* worker) { QMutexLocker lock(&mutex()); target() = worker; enabledFlag() = worker != nullptr; }
+     static bool enabled() { return enabledFlag().load(); }
++    // Set before queuing Stop so provider events cannot race the local SDL exit.
++    static void requestStop() {
++        QMutexLocker lock(&mutex());
++        if (!target()) return;
++        expectedEndFlag() = true;
++        QMetaObject::invokeMethod(target(), "stop", Qt::QueuedConnection);
++    }
++    static void setExpectedEnd(bool value) { expectedEndFlag() = value; }
++    static bool expectedEnd() { return expectedEndFlag().load(); }
+     static void setHostRequestsAllowed(bool value) { allowedFlag() = value; }
+     static void setClosing() { closingFlag() = true; }
+     static bool hostRequestsAllowed() { return !closingFlag().load() && (!enabled() || allowedFlag().load()); }
+@@ -35,5 +44,6 @@ private:
+     static std::atomic<bool>& activeFlag() { static std::atomic<bool> value{false}; return value; }
+     static std::atomic<bool>& allowedFlag() { static std::atomic<bool> value{false}; return value; }
+     static std::atomic<bool>& closingFlag() { static std::atomic<bool> value{false}; return value; }
++    static std::atomic<bool>& expectedEndFlag() { static std::atomic<bool> value{false}; return value; }
+ };
+ }
+diff --git a/app/antcloud/version.txt b/app/antcloud/version.txt
+new file mode 100644
+index 0000000..6d7de6e
+--- /dev/null
++++ b/app/antcloud/version.txt
+@@ -0,0 +1 @@
++1.0.2
+diff --git a/app/app.pro b/app/app.pro
+index a088464..c84f2ad 100644
+--- a/app/app.pro
++++ b/app/app.pro
+@@ -571,10 +571,7 @@ macx {
+     APP_BUNDLE_RESOURCES.files = moonlight.icns
+     APP_BUNDLE_RESOURCES.path = Contents/Resources
+ 
+-    APP_BUNDLE_PLIST.files = $$OUT_PWD/Info.plist
+-    APP_BUNDLE_PLIST.path = Contents
+-
+-    QMAKE_BUNDLE_DATA += APP_BUNDLE_RESOURCES APP_BUNDLE_PLIST
++    QMAKE_BUNDLE_DATA += APP_BUNDLE_RESOURCES
+ 
+     !disable-prebuilts {
+         APP_BUNDLE_FRAMEWORKS.files = $$files(../libs/mac/Frameworks/*.framework, true) $$files(../libs/mac/lib/*.dylib, true)
+@@ -588,3 +585,4 @@ macx {
+ 
+ VERSION = "$$cat(version.txt)"
+ DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
++DEFINES += ANTCLOUD_VERSION_STR=\\\"$$cat(antcloud/version.txt)\\\"
+diff --git a/app/backend/computermanager.cpp b/app/backend/computermanager.cpp
+index 96177da..db100c1 100644
+--- a/app/backend/computermanager.cpp
++++ b/app/backend/computermanager.cpp
+@@ -120,6 +120,9 @@ private:
+                 stateChanged = true;
+             }
+ 
++            // Discovery needs a fresh response even when cached host metadata is unchanged.
++            if (online) emit computerPolled(m_Computer);
++
+             // Grab the applist if it's empty or it's been long enough that we need to refresh
+             pollsSinceLastAppListFetch++;
+             if (m_Computer->state == NvComputer::CS_ONLINE &&
+@@ -152,6 +155,7 @@ private:
+     }
+ 
+ signals:
++   void computerPolled(NvComputer* computer);
+    void computerStateChanged(NvComputer* computer);
+ 
+ private:
+@@ -412,6 +416,8 @@ void ComputerManager::startPollingComputer(NvComputer* computer)
+         PcMonitorThread* thread = new PcMonitorThread(computer);
+         connect(thread, &PcMonitorThread::computerStateChanged,
+                 this, &ComputerManager::handleComputerStateChanged);
++        connect(thread, &PcMonitorThread::computerPolled,
++                this, &ComputerManager::computerPolled);
+         pollingEntry->setActiveThread(thread);
+         thread->start();
+     }
+diff --git a/app/backend/computermanager.h b/app/backend/computermanager.h
+index 2f74ce5..2a4c06c 100644
+--- a/app/backend/computermanager.h
++++ b/app/backend/computermanager.h
+@@ -246,6 +246,7 @@ public:
+ 
+ signals:
+     void computerStateChanged(NvComputer* computer);
++    void computerPolled(NvComputer* computer);
+ 
+     void pairingCompleted(NvComputer* computer, QString error);
+ 
+diff --git a/app/backend/computerseeker.cpp b/app/backend/computerseeker.cpp
+index 0cdc7a3..d4a8f8a 100644
+--- a/app/backend/computerseeker.cpp
++++ b/app/backend/computerseeker.cpp
+@@ -4,7 +4,7 @@
+ 
+ ComputerSeeker::ComputerSeeker(ComputerManager *manager, QString computerName, QObject *parent)
+     : QObject(parent), m_ComputerManager(manager), m_ComputerName(computerName),
+-      m_TimeoutTimer(new QTimer(this))
++      m_TimeoutTimer(new QTimer(this)), m_RetryTimer(new QTimer(this))
+ {
+     // If we know this computer, send a WOL packet to wake it up in case it is asleep.
+     NvComputer* matchingComputer = findMatchingComputer();
+@@ -17,11 +17,27 @@ ComputerSeeker::ComputerSeeker(ComputerManager *manager, QString computerName, Q
+             this, &ComputerSeeker::onTimeout);
+     connect(m_ComputerManager, &ComputerManager::computerStateChanged,
+             this, &ComputerSeeker::onComputerUpdated);
++    connect(m_ComputerManager, &ComputerManager::computerPolled,
++            this, &ComputerSeeker::onComputerUpdated);
++    m_RetryTimer->setSingleShot(true);
++    m_RetryTimer->setInterval(2000);
++    connect(m_RetryTimer, &QTimer::timeout, this, &ComputerSeeker::tryAddHost);
++    connect(m_ComputerManager, &ComputerManager::computerAddCompleted, this,
++            [this](QVariant success, QVariant) {
++        if (!m_AddPending) return;
++        m_AddPending = false;
++        if (!success.toBool() && m_RetryFailedAdds && m_TimeoutTimer->isActive())
++            m_RetryTimer->start();
++    });
+ }
+ 
+-void ComputerSeeker::start(int timeout)
++void ComputerSeeker::start(int timeout, bool retryFailedAdds)
+ {
++    if (m_Polling) return;
++    m_RetryFailedAdds = retryFailedAdds;
+     m_TimeoutTimer->start(timeout);
++    m_ComputerManager->startPolling();
++    m_Polling = true;
+ 
+     // If we don't know this computer by name, address, or UUID, try adding it
+     // manually and see if we can find it by address, hostname, or mDNS.
+@@ -29,15 +45,30 @@ void ComputerSeeker::start(int timeout)
+     // NB: We don't do this unconditionally because it will wipe out the user's
+     // manual address if they pass another reachable hostname/address.
+     if (!findMatchingComputer()) {
+-        m_ComputerManager->addNewHostManually(m_ComputerName);
++        tryAddHost();
+     }
+-
+-    m_ComputerManager->startPolling();
+ }
+ 
+ ComputerSeeker::~ComputerSeeker()
+ {
+-    if (m_TimeoutTimer->isActive()) m_ComputerManager->stopPollingAsync();
++    stop();
++}
++
++void ComputerSeeker::tryAddHost()
++{
++    if (!m_TimeoutTimer->isActive() || m_AddPending || findMatchingComputer()) return;
++    m_AddPending = true;
++    m_ComputerManager->addNewHostManually(m_ComputerName);
++}
++
++void ComputerSeeker::stop()
++{
++    m_TimeoutTimer->stop();
++    m_RetryTimer->stop();
++    if (m_Polling) {
++        m_ComputerManager->stopPollingAsync();
++        m_Polling = false;
++    }
+ }
+ 
+ void ComputerSeeker::onComputerUpdated(NvComputer *computer)
+@@ -46,8 +77,7 @@ void ComputerSeeker::onComputerUpdated(NvComputer *computer)
+         return;
+     }
+     if (matchComputer(computer) && isOnline(computer)) {
+-        m_ComputerManager->stopPollingAsync();
+-        m_TimeoutTimer->stop();
++        stop();
+         emit computerFound(computer);
+     }
+ }
+@@ -89,7 +119,6 @@ bool ComputerSeeker::isOnline(NvComputer *computer) const
+ 
+ void ComputerSeeker::onTimeout()
+ {
+-    m_TimeoutTimer->stop();
+-    m_ComputerManager->stopPollingAsync();
++    stop();
+     emit errorTimeout();
+ }
+diff --git a/app/backend/computerseeker.h b/app/backend/computerseeker.h
+index d342b99..84c178a 100644
+--- a/app/backend/computerseeker.h
++++ b/app/backend/computerseeker.h
+@@ -13,7 +13,7 @@ public:
+     explicit ComputerSeeker(ComputerManager *manager, QString computerName, QObject *parent = nullptr);
+     ~ComputerSeeker() override;
+ 
+-    void start(int timeout);
++    void start(int timeout, bool retryFailedAdds = false);
+ 
+ signals:
+     void computerFound(NvComputer *computer);
+@@ -22,6 +22,8 @@ signals:
+ private slots:
+     void onComputerUpdated(NvComputer *computer);
+     void onTimeout();
++    void tryAddHost();
++    void stop();
+ 
+ private:
+     bool matchComputer(NvComputer *computer) const;
+@@ -32,4 +34,6 @@ private:
+     ComputerManager *m_ComputerManager;
+     QString m_ComputerName;
+     QTimer *m_TimeoutTimer;
++    QTimer *m_RetryTimer;
++    bool m_Polling = false, m_AddPending = false, m_RetryFailedAdds = false;
+ };
+diff --git a/app/gui/AntCloudMain.qml b/app/gui/AntCloudMain.qml
+index 90c5e08..f47dd15 100644
+--- a/app/gui/AntCloudMain.qml
++++ b/app/gui/AntCloudMain.qml
+@@ -10,6 +10,7 @@ ApplicationWindow {
+     id: appWindow
+ 
+     readonly property color accent: "#0867d2"
++    readonly property color errorColor: theme.window.hslLightness < 0.5 ? "#ff8a80" : "#b42318"
+     property bool allowClose: false
+     required property var controller
+     readonly property int currentStage: stageNumbers[appWindow.controller.phase] === undefined ? -1 : stageNumbers[appWindow.controller.phase]
+@@ -318,7 +319,7 @@ ApplicationWindow {
+                         Label {
+                             font.pixelSize: 27
+                             font.weight: Font.DemiBold
+-                            text: appWindow.controller.busy ? "Connecting to Windows" : "Your Windows desktop"
++                            text: appWindow.controller.phase === "connected" ? "Connected to Windows" : (appWindow.controller.active && appWindow.currentStage >= 0 ? "Connecting to Windows" : "Your Windows desktop")
+                         }
+                         Label {
+                             font.pixelSize: 13
+@@ -333,7 +334,7 @@ ApplicationWindow {
+                         enabled: !appWindow.controller.busy
+                         highlighted: true
+                         objectName: "connectButton"
+-                        text: appWindow.controller.busy ? "Connecting…" : "Connect"
++                        text: appWindow.controller.active && appWindow.currentStage >= 0 ? "Connecting…" : (appWindow.controller.busy ? "Finishing…" : "Connect")
+ 
+                         onClicked: appWindow.controller.start()
+                     }
+@@ -356,7 +357,7 @@ ApplicationWindow {
+                             Accessible.name: "Stream resolution"
+                             Layout.fillWidth: true
+                             currentIndex: appWindow.controller.resolutionIndex
+-                            model: ["1280 × 720", "1920 × 1080", "1440 × 900 · experimental", "2560 × 1440", "3840 × 2160"]
++                            model: ["720p · 1280 × 720", "1080p · 1920 × 1080", "1440p · Experimental", "4K · Experimental"]
+                             objectName: "resolutionPicker"
+ 
+                             onActivated: appWindow.controller.resolutionIndex = currentIndex
+@@ -399,14 +400,6 @@ ApplicationWindow {
+                         }
+                     }
+                 }
+-                Label {
+-                    Layout.fillWidth: true
+-                    font.pixelSize: 13
+-                    opacity: 0.8
+-                    text: "1440 × 900 requests that size from the native host using the provider’s 1080p preset. Windows display support is still required."
+-                    visible: appWindow.controller.resolutionIndex === 2
+-                    wrapMode: Text.WordWrap
+-                }
+                 Flow {
+                     Layout.fillWidth: true
+                     Layout.preferredHeight: implicitHeight
+@@ -447,7 +440,7 @@ ApplicationWindow {
+ 
+                         Label {
+                             font.weight: Font.DemiBold
+-                            text: appWindow.controller.busy ? "Connection progress" : "Session"
++                            text: appWindow.controller.active && appWindow.currentStage >= 0 ? "Connection progress" : "Session"
+                         }
+                         Item {
+                             Layout.fillWidth: true
+@@ -469,7 +462,7 @@ ApplicationWindow {
+                     ColumnLayout {
+                         Layout.fillWidth: true
+                         spacing: 10
+-                        visible: appWindow.controller.busy
++                        visible: appWindow.controller.active && appWindow.currentStage >= 0
+ 
+                         Repeater {
+                             model: appWindow.stepModel
+@@ -529,19 +522,49 @@ ApplicationWindow {
+             Label {
+                 Accessible.name: text
+                 Layout.fillWidth: true
+-                color: theme.windowText
++                color: appWindow.errorColor
+                 font.weight: Font.DemiBold
+                 objectName: "errorMessage"
+                 text: "Connection issue\n" + appWindow.controller.error
+                 visible: appWindow.controller.error.length > 0
+                 wrapMode: Text.WordWrap
+             }
++            ColumnLayout {
++                Layout.fillWidth: true
++                objectName: "powerStatusSection"
++                spacing: 6
++                visible: appWindow.controller.shutdownStatus.length > 0
++
++                Rectangle {
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 1
++                    color: theme.mid
++                    opacity: 0.35
++                }
++                Label {
++                    font.weight: Font.DemiBold
++                    text: "VM power"
++                }
++                Label {
++                    Layout.fillWidth: true
++                    objectName: "powerStatus"
++                    text: appWindow.controller.shutdownStatus
++                    wrapMode: Text.WordWrap
++                }
++            }
+             Label {
+                 Layout.fillWidth: true
+                 text: appWindow.controller.notice
+                 visible: appWindow.controller.notice.length > 0
+                 wrapMode: Text.WordWrap
+             }
++            Label {
++                Layout.fillWidth: true
++                objectName: "streamAdvisory"
++                text: appWindow.controller.streamWarning
++                visible: appWindow.controller.active && appWindow.controller.streamWarning.length > 0
++                wrapMode: Text.WordWrap
++            }
+             Rectangle {
+                 Layout.fillWidth: true
+                 Layout.preferredHeight: 1
+@@ -689,7 +712,7 @@ ApplicationWindow {
+         width: Math.min(540, appWindow.width - 40)
+ 
+         contentItem: Label {
+-            text: "Windows modifiers\nCommand → Alt · Option → Windows · Control → Ctrl\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate and stream dimensions. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
++            text: "Windows modifiers\nCommand → Alt · Option → Windows · Control → Ctrl\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\nControl + Command + Shift + V: type Mac clipboard text (host support required)\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate and stream dimensions. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
+             wrapMode: Text.WordWrap
+         }
+     }
+@@ -699,7 +722,7 @@ ApplicationWindow {
+         modal: true
+         palette: appWindow.palette
+         standardButtons: Dialog.Close
+-        title: "AntCloud Native"
++        title: "AntCloud Native " + Qt.application.version
+         width: Math.min(460, appWindow.width - 40)
+ 
+         contentItem: Label {
+diff --git a/app/gui/SettingsView.qml b/app/gui/SettingsView.qml
+index 8c8981c..b17c993 100644
+--- a/app/gui/SettingsView.qml
++++ b/app/gui/SettingsView.qml
+@@ -252,12 +252,6 @@ Flickable {
+                                 video_height: "720"
+                                 is_custom: false
+                             }
+-                            ListElement {
+-                                text: qsTr("1440×900 (host support required)")
+-                                video_width: "1440"
+-                                video_height: "900"
+-                                is_custom: false
+-                            }
+                             ListElement {
+                                 text: qsTr("1080p")
+                                 video_width: "1920"
+diff --git a/app/main.cpp b/app/main.cpp
+index f913d6d..540d535 100644
+--- a/app/main.cpp
++++ b/app/main.cpp
+@@ -426,7 +426,7 @@ int main(int argc, char *argv[])
+     SDL_SetMainReady();
+ 
+     // Set the app version for the QCommandLineParser's showVersion() command
+-    QCoreApplication::setApplicationVersion(VERSION_STR);
++    QCoreApplication::setApplicationVersion(ANTCLOUD_VERSION_STR);
+ 
+     // Set these here to allow us to use the default QSettings constructor.
+     // These also ensure that our cache directory is named correctly. As such,
+diff --git a/app/streaming/bandwidth.cpp b/app/streaming/bandwidth.cpp
+index cb3dfe3..b2ee657 100644
+--- a/app/streaming/bandwidth.cpp
++++ b/app/streaming/bandwidth.cpp
+@@ -24,18 +24,23 @@ void BandwidthTracker::AddBytes(size_t bytes) {
+ // so average only the newest 25% of complete buckets
+ double BandwidthTracker::GetAverageMbps() {
+     std::lock_guard<std::mutex> lock(mtx);
+-    auto now = steady_clock::now();
++    return getAverageMbpsAt(steady_clock::now());
++}
++
++// Caller holds mtx. Explicit time keeps the measurement deterministic in tests.
++double BandwidthTracker::getAverageMbpsAt(steady_clock::time_point now) {
+     auto ms = duration_cast<milliseconds>(now.time_since_epoch());
+     int currentIndex = (ms.count() / bucketIntervalMs) % bucketCount;
++    const auto windowEnd = steady_clock::time_point(milliseconds(ms.count() - ms.count() % bucketIntervalMs));
+     int maxBuckets = bucketCount / 4;
+     size_t totalBytes = 0;
+     steady_clock::time_point oldestBucket = now;
+ 
+     // Sum bytes from 25% most recent buckets as long as they are completed
+-    for (int i = 0; i < maxBuckets; i++) {
++    for (int i = 1; i <= maxBuckets; i++) {
+         int idx = (currentIndex - i + bucketCount) % bucketCount;
+         const Bucket &bucket = buckets[idx];
+-        if (isValid(bucket, now) && (now - bucket.start >= milliseconds(bucketIntervalMs))) {
++        if (bucket.bytes && isValid(bucket, now) && bucket.start < windowEnd) {
+             totalBytes += bucket.bytes;
+             if (bucket.start < oldestBucket) {
+                 oldestBucket = bucket.start;
+@@ -43,7 +48,9 @@ double BandwidthTracker::GetAverageMbps() {
+         }
+     }
+ 
+-    double elapsed = duration<double>(now - oldestBucket).count();
++    // The numerator contains complete buckets only. Their duration must also
++    // end at the last complete boundary, excluding the in-progress interval.
++    double elapsed = duration<double>(windowEnd - oldestBucket).count();
+     if (elapsed <= 0.0) {
+         return 0.0;
+     }
+diff --git a/app/streaming/bandwidth.h b/app/streaming/bandwidth.h
+index b1baf87..bb94939 100644
+--- a/app/streaming/bandwidth.h
++++ b/app/streaming/bandwidth.h
+@@ -85,6 +85,8 @@ public:
+     unsigned int GetWindowSeconds();
+ 
+ private:
++    friend class BandwidthTest;
++    double getAverageMbpsAt(std::chrono::steady_clock::time_point now);
+     /**
+      * @brief A structure representing a single time bucket.
+      *
+diff --git a/app/streaming/input/keyboard.cpp b/app/streaming/input/keyboard.cpp
+index 522aeb7..3990ee2 100644
+--- a/app/streaming/input/keyboard.cpp
++++ b/app/streaming/input/keyboard.cpp
+@@ -27,6 +27,7 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
+ {
+     switch (combo) {
+     case KeyComboQuit:
++        AntCloud::StreamBridge::requestStop();
+         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                     "Detected quit key combo");
+ 
+@@ -155,6 +156,7 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
+         break;
+ 
+     case KeyComboQuitAndExit:
++        AntCloud::StreamBridge::requestStop();
+         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                     "Detected quitAndExit key combo");
+ 
+@@ -227,7 +229,7 @@ bool SdlInputHandler::handleLocalControlEvent(const SDL_Event& event)
+     }
+     if (action == AntCloudControls::Stop || action == AntCloudControls::Shutdown) {
+         // Exit locally without GameStream quitApp. Only confirmed Shutdown reaches the provider.
+-        Session::get()->requestLocalStop();
++        Session::get()->requestLocalStop(action == AntCloudControls::Shutdown);
+     }
+     return true;
+ }
+diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
+index 3d283d1..15bf68c 100644
+--- a/app/streaming/session.cpp
++++ b/app/streaming/session.cpp
+@@ -1734,8 +1734,9 @@ void Session::flushWindowEvents()
+     SDL_PushEvent(&flushEvent);
+ }
+ 
+-void Session::requestLocalStop()
++void Session::requestLocalStop(bool shutdown)
+ {
++    if (!shutdown) AntCloud::StreamBridge::requestStop();
+     // Stop stream is always local, regardless of the GUI's quit-host-app preference.
+     m_Preferences->quitAppAfter = false;
+     m_ShouldExit = !AntCloud::StreamBridge::enabled();
+diff --git a/app/streaming/session.h b/app/streaming/session.h
+index 518ecb1..7aa85ad 100644
+--- a/app/streaming/session.h
++++ b/app/streaming/session.h
+@@ -125,7 +125,7 @@ public:
+ 
+     void setShouldExit(bool quitHostApp = false);
+ 
+-    void requestLocalStop();
++    void requestLocalStop(bool shutdown = false);
+ 
+ signals:
+     void stageStarting(QString stage);
+diff --git a/tests/antcloud/bandwidth.pro b/tests/antcloud/bandwidth.pro
+new file mode 100644
+index 0000000..2c1f278
+--- /dev/null
++++ b/tests/antcloud/bandwidth.pro
+@@ -0,0 +1,5 @@
++QT += core testlib
++CONFIG += console testcase c++17
++CONFIG -= app_bundle
++INCLUDEPATH += ../../app/streaming
++SOURCES += bandwidth_test.cpp ../../app/streaming/bandwidth.cpp
+diff --git a/tests/antcloud/bandwidth_test.cpp b/tests/antcloud/bandwidth_test.cpp
+new file mode 100644
+index 0000000..4557b96
+--- /dev/null
++++ b/tests/antcloud/bandwidth_test.cpp
+@@ -0,0 +1,36 @@
++#include "bandwidth.h"
++#include <QtTest>
++using namespace std::chrono;
++
++class BandwidthTest : public QObject {
++    Q_OBJECT
++    void add(BandwidthTracker& tracker, int startMs, size_t bytes) {
++        auto& bucket = tracker.buckets[(startMs / tracker.bucketIntervalMs) % tracker.bucketCount];
++        bucket.start = steady_clock::time_point(milliseconds(startMs));
++        bucket.bytes = bytes;
++    }
++private slots:
++    void constantRateDoesNotDependOnCurrentBucketPhase() {
++        // Ten complete 250 ms samples at 1 Mbps must always report 1 Mbps,
++        // regardless of how far the unfinished eleventh sample has advanced.
++        BandwidthTracker tracker;
++        for (int i = 1; i <= 10; ++i) add(tracker, 100000 - i * 250, 31250);
++        for (int phase : {0, 1, 125, 249})
++            QCOMPARE(tracker.getAverageMbpsAt(steady_clock::time_point(milliseconds(100000 + phase))), 1.0);
++    }
++    void unfinishedAndExpiredSamplesAreExcluded() {
++        BandwidthTracker tracker;
++        add(tracker, 100000, 1000000);
++        QCOMPARE(tracker.getAverageMbpsAt(steady_clock::time_point(milliseconds(100125))), 0.0);
++        add(tracker, 99750, 31250);
++        QCOMPARE(tracker.getAverageMbpsAt(steady_clock::time_point(milliseconds(100000))), 1.0);
++        QCOMPARE(tracker.getAverageMbpsAt(steady_clock::time_point(milliseconds(105000))), 0.0);
++    }
++    void quietIntervalsCountAsZeroThroughput() {
++        BandwidthTracker tracker;
++        add(tracker, 99000, 31250); // 0.25 Mbit during one second, then silence.
++        QCOMPARE(tracker.getAverageMbpsAt(steady_clock::time_point(milliseconds(100000))), 0.25);
++    }
++};
++QTEST_GUILESS_MAIN(BandwidthTest)
++#include "bandwidth_test.moc"
+diff --git a/tests/antcloud/controls_test.cpp b/tests/antcloud/controls_test.cpp
+index b101444..40ac6b1 100644
+--- a/tests/antcloud/controls_test.cpp
++++ b/tests/antcloud/controls_test.cpp
+@@ -11,14 +11,16 @@ QByteArray Path::readDataFile(QString) {
+ class Receiver : public QObject {
+     Q_OBJECT
+ public:
+-    int requests = 0;
++    int requests = 0, stops = 0;
+ public slots:
+     void shutdown() { ++requests; }
++    void stop() { ++stops; }
+ };
+ class ControlsTest : public QObject {
+     Q_OBJECT
+ private slots:
+     void localEventsAndExplicitShutdown() {
++        AntCloud::StreamBridge::setExpectedEnd(false);
+         QVERIFY(SDL_Init(SDL_INIT_VIDEO) == 0); QVERIFY(TTF_Init() == 0);
+         auto stream = SDL_CreateWindow("test",0,0,1280,720,SDL_WINDOW_HIDDEN); QVERIFY(stream);
+         Receiver receiver;
+@@ -48,7 +50,13 @@ private slots:
+             QVERIFY(controls.handles(event)); QCOMPARE(controls.handle(event),AntCloudControls::Resume);
+             QVERIFY(controls.requestShutdown());
+             QTRY_COMPARE(receiver.requests,1);
++            QVERIFY(!AntCloud::StreamBridge::expectedEnd()); // Queueing is not write acceptance.
++            AntCloud::StreamBridge::requestStop();
++            QVERIFY(AntCloud::StreamBridge::expectedEnd());
++            QTRY_COMPARE(receiver.stops,1);
++            QCOMPARE(receiver.requests,1); // Stop never requests shutdown.
+             AntCloud::StreamBridge::install(nullptr);
++            AntCloud::StreamBridge::setExpectedEnd(false);
+         }
+         SDL_DestroyWindow(stream); TTF_Quit(); SDL_Quit();
+     }
+diff --git a/tests/antcloud/host_test_services.cpp b/tests/antcloud/host_test_services.cpp
+new file mode 100644
+index 0000000..8a18d14
+--- /dev/null
++++ b/tests/antcloud/host_test_services.cpp
+@@ -0,0 +1,25 @@
++// Test-only boundaries: no compatibility download, box-art deletion or public
++// connectivity/STUN probes. Real NvHTTP/NvComputer/ComputerManager/Seeker run.
++#include "settings/streamingpreferences.h"
++#include "settings/compatfetcher.h"
++#include "backend/boxartmanager.h"
++#include <Limelight.h>
++
++StreamingPreferences::StreamingPreferences(QQmlEngine* engine) : QObject(engine), m_QmlEngine(engine) {
++    enableMdns = false; detectNetworkBlocking = false;
++}
++StreamingPreferences* StreamingPreferences::get(QQmlEngine*) { static StreamingPreferences value(nullptr); return &value; }
++int StreamingPreferences::getDefaultBitrate(int,int,int,bool) { return 6000; }
++void StreamingPreferences::save() {}
++void StreamingPreferences::reload() {}
++bool StreamingPreferences::retranslate() { return false; }
++CompatFetcher::CompatFetcher(QObject* parent) : QObject(parent), m_Nam(nullptr) {}
++void CompatFetcher::start() {}
++void CompatFetcher::handleCompatInfoFetched(QNetworkReply*) {}
++bool CompatFetcher::isGfeVersionSupported(QString) { return true; }
++void BoxArtManager::deleteBoxArt(NvComputer*) {}
++extern "C" {
++const char* LiGetLaunchUrlQueryParameters() { return ""; }
++unsigned int LiTestClientConnectivity(const char*, unsigned short, unsigned int) { return ML_TEST_RESULT_INCONCLUSIVE; }
++int LiFindExternalAddressIP4(const char*, unsigned short, unsigned int*) { return -1; }
++}
+diff --git a/tests/antcloud/protocol_test.cpp b/tests/antcloud/protocol_test.cpp
+index 383058a..5d4d8c2 100644
+--- a/tests/antcloud/protocol_test.cpp
++++ b/tests/antcloud/protocol_test.cpp
+@@ -24,9 +24,17 @@ int main(int argc, char** argv) {
+     assert(s.isValid());
+     assert(s.providerSpec() == "720 6000 60 10");
+     s.width = 1440; s.height = 900;
+-    assert(s.isValid() && s.preset() == 1080);
++    assert(!s.isValid() && s.preset() == 0);
+     s.width = 1440; s.height = 901;
+     assert(!s.isValid());
++    for (int old = 0; old < 5; ++old) {
++        const int migrated[] = {0, 1, 1, 2, 3};
++        assert(savedResolutionIndex(old, 1) == migrated[old]);
++    }
++    for (int current = 0; current < 4; ++current) assert(savedResolutionIndex(current, 2) == current);
++    assert(savedResolutionIndex(99, 2) == 0);
++    assert(savedResolutionIndex(-1, 1) == 0);
++    assert(savedBitrate(2000) == 6000 && savedBitrate(12000) == 12000);
+     s = {}; s.fps = 61;
+     assert(!s.isValid());
+     s = {}; s.bitrate = 40001;
+diff --git a/tests/antcloud/provider_test.cpp b/tests/antcloud/provider_test.cpp
+index a49fd4e..c01c1c5 100644
+--- a/tests/antcloud/provider_test.cpp
++++ b/tests/antcloud/provider_test.cpp
+@@ -15,6 +15,7 @@ public:
+     QWebSocketServer* web = nullptr;
+     QWebSocket* peer = nullptr;
+     std::atomic<int> lookups{0}, checks{0}, pins{0}, controls{0}, shutdowns{0}, pongs{0};
++    std::atomic<int> expectedBitrate{6000};
+     std::atomic<bool> ready{false}, wrongAuth{false}, wrongQuery{false}, malformed{false};
+     QString api, stream;
+ public slots:
+@@ -71,10 +72,11 @@ public slots:
+         });
+         connect(web, &QWebSocketServer::newConnection, this, [this] {
+             peer = web->nextPendingConnection();
++            connect(peer, &QWebSocket::disconnected, peer, &QObject::deleteLater);
+             auto query = QUrlQuery(peer->requestUrl());
+             if (query.queryItemValue("token") != "fixture.access.token"
+                 || query.queryItemValue("connection") != "mobile"
+-                || query.queryItemValue("stream") != "720 6000 60 10") wrongQuery = true;
++                || query.queryItemValue("stream") != QString("720 %1 60 10").arg(expectedBitrate.load())) wrongQuery = true;
+             connect(peer, &QWebSocket::textMessageReceived, this, [this](const QString& packet) {
+                 if (packet == "40") {
+                     peer->sendTextMessage("40{\"sid\":\"fixture\"}");
+@@ -165,6 +167,61 @@ private slots:
+         QMetaObject::invokeMethod(worker, "stop", Qt::QueuedConnection);
+         QVERIFY(ended.wait(2000)); QCOMPARE(fixture->shutdowns.load(), 0);
+     }
++    void shutdownThenReconnectSameWorker() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), ended(worker, &ProviderWorker::ended);
++        QSignalSpy sent(worker, &ProviderWorker::shutdownRequested);
++        auto start = [this] {
++            QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++                Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        };
++        start(); QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, "pair", Qt::QueuedConnection, Q_ARG(QString,"1234"));
++        QTRY_COMPARE(fixture->pins.load(),1);
++        QMetaObject::invokeMethod(worker, "shutdown", Qt::QueuedConnection);
++        QVERIFY(sent.wait(1000));
++        QTRY_COMPARE(fixture->shutdowns.load(),1);
++        QMetaObject::invokeMethod(fixture, "inactive", Qt::QueuedConnection);
++        QVERIFY(ended.wait(2000));
++        QCOMPARE(ended.first()[0].toString(), QString()); // Expected shutdown is not an error.
++        host.clear(); ended.clear(); sent.clear();
++        start(); QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, "pair", Qt::QueuedConnection, Q_ARG(QString,"1234"));
++        QTRY_COMPARE(fixture->pins.load(),2); // Fresh session resets one-shot pairing.
++        fixture->ready = true;
++        QTRY_COMPARE_WITH_TIMEOUT(fixture->controls.load(),1,4000);
++        QMetaObject::invokeMethod(worker, "shutdown", Qt::QueuedConnection);
++        QVERIFY(sent.wait(1000));
++        QTRY_COMPARE(fixture->shutdowns.load(),2); // Exactly once per session.
++    }
++    void shutdownCancelsReadinessPolling() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), sent(worker, &ProviderWorker::shutdownRequested);
++        QSignalSpy ended(worker, &ProviderWorker::ended);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, "shutdown", Qt::QueuedConnection);
++        QVERIFY(sent.wait(1000));
++        fixture->ready = true;
++        QVERIFY(ended.wait(2000));
++        QCOMPARE(ended.first()[0].toString(), QString());
++        QCOMPARE(fixture->controls.load(), 0);
++    }
++    void failedShutdownWriteRemainsAnError() {
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), ended(worker, &ProviderWorker::ended);
++        QSignalSpy sent(worker, &ProviderWorker::shutdownRequested);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, [this] {
++            worker->m_Socket->blockSignals(true);
++            worker->m_Socket->abort(); // Fail the write, rather than deliver an expected close.
++            worker->shutdown();
++        }, Qt::BlockingQueuedConnection);
++        QTRY_COMPARE(ended.count(), 1);
++        QVERIFY(ended.first()[0].toString().contains("shutdown request could not be sent"));
++        QCOMPARE(sent.count(), 0);
++        QVERIFY(!StreamBridge::expectedEnd());
++    }
+     void pairingSubmittedOnlyOnce() {
+         QSignalSpy host(worker, &ProviderWorker::hostAvailable);
+         QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
+@@ -182,6 +239,38 @@ private slots:
+         QMetaObject::invokeMethod(fixture, "inactive", Qt::QueuedConnection);
+         QVERIFY(ended.wait(2000)); QVERIFY(ended.first()[0].toString().contains("video did not start"));
+     }
++    void localStopWinsQueuedProviderClosure() {
++        StreamBridge::setExpectedEnd(false);
++        StreamBridge::install(worker);
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable), ended(worker, &ProviderWorker::ended);
++        auto start = [this] {
++            QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++                Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
++        };
++        start(); QVERIFY(host.wait(3000));
++        QMetaObject::invokeMethod(worker, [this] {
++            StreamBridge::requestStop();
++            // Deliver closure before the queued Stop slot executes.
++            worker->receive("42[\"inactive\",\"videonotstarting\"]");
++        }, Qt::BlockingQueuedConnection);
++        QTRY_COMPARE(ended.count(), 1);
++        QCOMPARE(ended.first()[0].toString(), QString());
++        QCOMPARE(fixture->shutdowns.load(), 0);
++        host.clear(); ended.clear();
++        start(); QVERIFY(host.wait(3000));
++        QVERIFY(!StreamBridge::expectedEnd());
++        QMetaObject::invokeMethod(fixture, "inactive", Qt::QueuedConnection);
++        QVERIFY(ended.wait(2000));
++        QVERIFY(!ended.first()[0].toString().isEmpty()); // Genuine next-session error is retained.
++    }
++    void selectedBitrateReachesProvider() {
++        fixture->expectedBitrate = 20000;
++        QSignalSpy host(worker, &ProviderWorker::hostAvailable);
++        QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
++            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,20000));
++        QVERIFY(host.wait(3000));
++        QVERIFY(!fixture->wrongQuery); // Inspect the actual received WebSocket request.
++    }
+     void malformedReadinessNeverStartsVideo() {
+         fixture->ready = true; fixture->malformed = true;
+         QSignalSpy ended(worker, &ProviderWorker::ended);
+diff --git a/tests/antcloud/seeker.pro b/tests/antcloud/seeker.pro
+new file mode 100644
+index 0000000..5834d07
+--- /dev/null
++++ b/tests/antcloud/seeker.pro
+@@ -0,0 +1,22 @@
++QT += core gui network qml testlib
++CONFIG += console testcase c++17
++CONFIG -= app_bundle
++INCLUDEPATH += ../../app ../../moonlight-common-c/moonlight-common-c/src ../../qmdnsengine ../../qmdnsengine/qmdnsengine/src/include
++SOURCES += seeker_test.cpp host_test_services.cpp \
++    ../../app/backend/computerseeker.cpp ../../app/backend/computermanager.cpp \
++    ../../app/backend/nvcomputer.cpp ../../app/backend/nvhttp.cpp ../../app/backend/nvapp.cpp \
++    ../../app/backend/nvaddress.cpp ../../app/backend/nvpairingmanager.cpp ../../app/backend/identitymanager.cpp
++HEADERS += ../../app/backend/computerseeker.h ../../app/backend/computermanager.h \
++    ../../app/backend/nvhttp.h ../../app/settings/streamingpreferences.h ../../app/settings/compatfetcher.h
++SOURCES += $$files($$PWD/../../qmdnsengine/qmdnsengine/src/src/*.cpp)
++HEADERS += $$files($$PWD/../../qmdnsengine/qmdnsengine/src/include/qmdnsengine/*.h)
++HEADERS += $$files($$PWD/../../qmdnsengine/qmdnsengine/src/src/*.h)
++unix:!macx {
++    CONFIG += link_pkgconfig
++    PKGCONFIG += sdl2 openssl
++}
++macx {
++    INCLUDEPATH += $$PWD/../../libs/mac/include $$PWD/../../libs/mac/include/SDL2
++    LIBS += -L$$PWD/../../libs/mac/lib -lssl.3 -lcrypto.3 -lSDL2
++    QMAKE_RPATHDIR += $$PWD/../../libs/mac/lib
++}
+diff --git a/tests/antcloud/seeker_test.cpp b/tests/antcloud/seeker_test.cpp
+new file mode 100644
+index 0000000..961bc2a
+--- /dev/null
++++ b/tests/antcloud/seeker_test.cpp
+@@ -0,0 +1,107 @@
++#include "backend/computerseeker.h"
++#include "backend/computermanager.h"
++#include "backend/identitymanager.h"
++#include "antcloud/streambridge.h"
++#include <QtTest>
++#include <QTcpServer>
++#include <QTcpSocket>
++#include <QTemporaryDir>
++#include <QThreadPool>
++
++// Real host HTTP parsing, polling and discovery; only unrelated engine services
++// (preferences/compatibility/downloads) are isolated in host_test_services.cpp.
++class SeekerTest : public QObject {
++    Q_OBJECT
++    QTemporaryDir storage;
++    QTcpServer server;
++    QString address;
++    int requests = 0;
++    bool responding = true;
++private slots:
++    void initTestCase() {
++        QVERIFY(storage.isValid());
++        QCoreApplication::setOrganizationName("AntCloud isolated host fixture");
++        QCoreApplication::setApplicationName("Host discovery tests");
++        QSettings::setDefaultFormat(QSettings::IniFormat);
++        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, storage.path());
++        qRegisterMetaType<NvComputer*>();
++        IdentityManager::get();
++        QVERIFY(server.listen(QHostAddress::LocalHost));
++        address = QString("127.0.0.1:%1").arg(server.serverPort());
++        connect(&server, &QTcpServer::newConnection, this, [this] {
++            while (server.hasPendingConnections()) {
++                auto socket = server.nextPendingConnection();
++                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
++                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
++                    const auto bytes = socket->property("bytes").toByteArray() + socket->readAll();
++                    socket->setProperty("bytes", bytes);
++                    if (!bytes.contains("\r\n\r\n") || socket->property("handled").toBool()) return;
++                    socket->setProperty("handled", true); ++requests;
++                    const QByteArray xml = "<root status_code=\"200\"><hostname>Fixture</hostname>"
++                        "<uniqueid>fixture-host</uniqueid><appversion>7.1.0.0</appversion>"
++                        "<GfeVersion>3.24.0.0</GfeVersion><state>SUNSHINE_SERVER_FREE</state>"
++                        "<PairStatus>0</PairStatus><currentgame>0</currentgame>"
++                        "<HttpsPort>47984</HttpsPort></root>";
++                    socket->write("HTTP/1.1 " + QByteArray(responding ? "200 OK" : "404 Not Ready")
++                        + "\r\nContent-Type: text/xml\r\nContent-Length: " + QByteArray::number(xml.size())
++                        + "\r\nConnection: close\r\n\r\n" + xml);
++                    socket->disconnectFromHost();
++                });
++            }
++        });
++    }
++    void init() {
++        QSettings().clear(); requests = 0; responding = true;
++        AntCloud::StreamBridge::install(nullptr);
++    }
++    void cachedOnlineHostReconnectsWithoutRestart() {
++        ComputerManager manager(StreamingPreferences::get());
++        {
++            ComputerSeeker first(&manager, address);
++            QSignalSpy found(&first, &ComputerSeeker::computerFound);
++            first.start(2500); QVERIFY(found.wait(3000));
++        }
++        QTest::qWait(200);
++        QVERIFY(!manager.getComputers().isEmpty());
++        QCOMPARE(manager.getComputers().first()->state, NvComputer::CS_ONLINE);
++        const int before = requests;
++        ComputerSeeker second(&manager, address);
++        QSignalSpy found(&second, &ComputerSeeker::computerFound);
++        second.start(2500); QVERIFY(found.wait(3000));
++        QVERIFY(requests > before); // A fresh response, never cached-online success.
++        QCOMPARE(found.count(), 1);
++    }
++    void cleanupTestCase() { QThreadPool::globalInstance()->waitForDone(); }
++    void failedFirstLookupRecoversWithinDeadline() {
++        responding = false;
++        ComputerManager manager(StreamingPreferences::get());
++        ComputerSeeker seeker(&manager, address);
++        QSignalSpy found(&seeker, &ComputerSeeker::computerFound);
++        QSignalSpy attempted(&manager, &ComputerManager::computerAddCompleted);
++        seeker.start(5000, true);
++        QVERIFY(attempted.wait(2000));
++        QVERIFY(!attempted.first()[0].toBool());
++        responding = true;
++        QVERIFY(found.wait(4000));
++        QCOMPARE(found.count(), 1);
++        QVERIFY(requests >= 2);
++    }
++    void cancellingLookupStopsRetriesAndAllowsReconnect() {
++        responding = false;
++        ComputerManager manager(StreamingPreferences::get());
++        {
++            ComputerSeeker seeker(&manager, address);
++            QSignalSpy attempted(&manager, &ComputerManager::computerAddCompleted);
++            seeker.start(5000, true); QVERIFY(attempted.wait(2000));
++        }
++        const int before = requests;
++        QTest::qWait(2300);
++        QCOMPARE(requests, before);
++        responding = true;
++        ComputerSeeker next(&manager, address);
++        QSignalSpy found(&next, &ComputerSeeker::computerFound);
++        next.start(2500, true); QVERIFY(found.wait(3000));
++    }
++};
++QTEST_GUILESS_MAIN(SeekerTest)
++#include "seeker_test.moc"
+diff --git a/tests/antcloud/ui_test.cpp b/tests/antcloud/ui_test.cpp
+index 46b0592..cf2519b 100644
+--- a/tests/antcloud/ui_test.cpp
++++ b/tests/antcloud/ui_test.cpp
+@@ -20,6 +20,8 @@ class UiController : public QObject {
+     Q_PROPERTY(QString detail MEMBER detail NOTIFY changed)
+     Q_PROPERTY(QString error MEMBER error NOTIFY changed)
+     Q_PROPERTY(QString notice MEMBER notice NOTIFY changed)
++    Q_PROPERTY(QString streamWarning MEMBER streamWarning NOTIFY changed)
++    Q_PROPERTY(QString shutdownStatus MEMBER shutdownStatus NOTIFY changed)
+     Q_PROPERTY(int elapsed MEMBER elapsed NOTIFY changed)
+     Q_PROPERTY(int resolutionLimit MEMBER resolutionLimit NOTIFY changed)
+     Q_PROPERTY(int resolutionIndex MEMBER resolutionIndex NOTIFY changed)
+@@ -27,7 +29,7 @@ class UiController : public QObject {
+     Q_PROPERTY(int bitrate MEMBER bitrate NOTIFY changed)
+ public:
+     bool signedIn=false, busy=false, active=false, fullscreen=true, relativeMouse=true, showStats=true;
+-    QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice;
++    QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice, streamWarning, shutdownStatus;
+     int elapsed=83, resolutionLimit=1080, resolutionIndex=0, fpsIndex=1, bitrate=6000, loginCalls=0, shutdownCalls=0;
+     Q_INVOKABLE void initialize(QQuickWindow*) {}
+     Q_INVOKABLE void login(QString, QString, bool) { ++loginCalls; signedIn=true; detail="Your Windows VM is ready to connect."; emit changed(); }
+@@ -37,7 +39,7 @@ public:
+     Q_INVOKABLE void shutdown() { ++shutdownCalls; disconnectStream(); }
+     Q_INVOKABLE void exportDiagnostics(QUrl) {}
+     Q_INVOKABLE void clearDiagnostics() {}
+-    void reset() { signedIn=busy=active=false; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); loginCalls=shutdownCalls=0; emit changed(); }
++    void reset() { signedIn=busy=active=false; resolutionIndex=0; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); streamWarning.clear(); shutdownStatus.clear(); loginCalls=shutdownCalls=0; emit changed(); }
+ signals:
+     void changed();
+ };
+@@ -97,13 +99,46 @@ private slots:
+         QTest::keyClick(window,Qt::Key_Return);
+         QCOMPARE(controller.shutdownCalls,1);
+     }
++    void retiredResolutionAndPowerStatus() {
++        controller.signedIn=true; controller.detail="Disconnected.";
++        controller.shutdownStatus="Shutdown requested. Check the dashboard for the final power state.";
++        emit controller.changed();
++        auto picker=window->findChild<QObject*>("resolutionPicker"); QVERIFY(picker);
++        QCOMPARE(picker->property("count").toInt(),4);
++        for (int index=0; index<4; ++index) {
++            QString label;
++            QVERIFY(QMetaObject::invokeMethod(picker, "textAt", Q_RETURN_ARG(QString,label), Q_ARG(int,index)));
++            QCOMPARE(label.contains("Experimental"), index >= 2);
++        }
++        auto power=window->findChild<QQuickItem*>("powerStatusSection"); QVERIFY(power);
++        QTRY_VERIFY(power->isVisible());
++        auto error=window->findChild<QQuickItem*>("errorMessage"); QVERIFY(error);
++        QVERIFY(!error->isVisible());
++        controller.shutdownStatus.clear(); controller.error="Fixture connection failure"; emit controller.changed();
++        QTRY_VERIFY(!power->isVisible()); QTRY_VERIFY(error->isVisible());
++        QVERIFY(error->property("color").value<QColor>().red() > error->property("color").value<QColor>().green());
++    }
++    void streamAdvisoryEndsWithStream() {
++        controller.signedIn=true; controller.active=true;
++        controller.streamWarning="Fixture stream advisory"; emit controller.changed();
++        auto advisory=window->findChild<QQuickItem*>("streamAdvisory"); QVERIFY(advisory);
++        QTRY_VERIFY(advisory->isVisible());
++        controller.disconnectStream();
++        QTRY_VERIFY(!advisory->isVisible());
++        controller.notice="Shutdown could not be sent"; emit controller.changed();
++        QVERIFY(!controller.notice.isEmpty()); // Other notices are independent.
++    }
+     void snapshots_data() {
+         QTest::addColumn<int>("width"); QTest::addColumn<bool>("dark"); QTest::addColumn<QString>("state");
+         QTest::newRow("login-600-light") << 600 << false << "login";
+         QTest::newRow("login-860-light") << 860 << false << "login";
+         QTest::newRow("ready-860-light") << 860 << false << "ready";
++        QTest::newRow("experimental-600-light") << 600 << false << "experimental";
++        QTest::newRow("experimental-860-dark") << 860 << true << "experimental";
+         QTest::newRow("boot-600-light") << 600 << false << "booting";
+         QTest::newRow("boot-860-dark") << 860 << true << "booting";
++        QTest::newRow("shutdown-600-light") << 600 << false << "shutdown";
++        QTest::newRow("shutdown-860-dark") << 860 << true << "shutdown";
+         QTest::newRow("error-1100-dark") << 1100 << true << "error";
+     }
+     void snapshots() {
+@@ -119,8 +154,10 @@ private slots:
+         QGuiApplication::setPalette(palette);
+         window->setWidth(width); window->setHeight(state=="booting"?840:740);
+         if(state!="login") { controller.signedIn=true; controller.detail="Your Windows VM is ready to connect."; }
++        if(state=="experimental") controller.resolutionIndex=2;
+         if(state=="booting") controller.start();
+-        if(state=="error") controller.error="The provider ended the session because video did not start. Check the dashboard, then retry.";
++        if(state=="shutdown") { controller.detail="Disconnected."; controller.shutdownStatus="Shutdown requested. Check the AntCloud dashboard for the final VM power state."; }
++        if(state=="error") { controller.detail="Disconnected. You can try connecting again."; controller.error="The provider ended the session because video did not start. Check the dashboard, then retry."; }
+         emit controller.changed(); QTest::qWait(200);
+         auto image=window->grabWindow(); QVERIFY(!image.isNull());
+         const QString path=qEnvironmentVariable("ANTCLOUD_SCREENSHOT_DIR");

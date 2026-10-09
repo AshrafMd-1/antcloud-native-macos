@@ -1,0 +1,35 @@
+{
+  "upstream": "https://github.com/moonlight-stream/moonlight-qt",
+  "upstream_commit": "a57e947d7185fd01384f6973df4df59ae2968d01",
+  "version": "6.2.0",
+  "dependency_release": "moonlight-stream/moonlight-qt-deps v19",
+  "submodules": [
+    {
+      "commit": "8d9fefd7b810f2541f78cc7a8ccbd185bc84c7a5",
+      "path": "app/SDL_GameControllerDB"
+    },
+    {
+      "commit": "f900dd4767759c7b9d0e93bcea666b55c69ea62f",
+      "path": "moonlight-common-c/moonlight-common-c"
+    },
+    {
+      "commit": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+      "path": "moonlight-common-c/moonlight-common-c/enet"
+    },
+    {
+      "commit": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+      "path": "moonlight-common-c/moonlight-common-c/nanors"
+    },
+    {
+      "commit": "920c097ffa742e2968290f15d4dde6693aec02e5",
+      "path": "qmdnsengine/qmdnsengine"
+    }
+  ],
+  "sdk_archive_sha256": "39fab7c95f5d513a6eb3bb19c66f1ae66bbf41dfe4118f82fabe3b46cc502d17",
+  "native_version": "1.0.3",
+  "patch_order": [
+    "docs/native-changes.patch",
+    "docs/1.0.2-changes.patch",
+    "docs/1.0.3-changes.patch"
+  ]
+}
