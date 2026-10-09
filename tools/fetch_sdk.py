@@ -26,6 +26,10 @@ def digest_file(path):
 
 def existing_sdk():
     receipt = TARGET / RECEIPT
+    if TARGET.is_symlink():
+        raise SystemExit('SDK directory must not be a symbolic link.')
+    if receipt.is_symlink():
+        raise SystemExit('SDK receipt must not be a symbolic link.')
     if not TARGET.exists():
         return False
     if not receipt.is_file():
@@ -33,6 +37,14 @@ def existing_sdk():
     data = json.loads(receipt.read_text())
     if data.get('archive_sha256') != DIGEST:
         raise SystemExit('SDK verification receipt does not match this release.')
+    actual_files = set()
+    for path in TARGET.rglob('*'):
+        if path.is_symlink():
+            raise SystemExit('SDK contains an unsupported symbolic link.')
+        if path.is_file() and path != receipt:
+            actual_files.add(path.relative_to(TARGET).as_posix())
+    if actual_files != set(data['files']):
+        raise SystemExit('SDK file inventory has changed. Rename src/libs/mac and retry.')
     for name, value in data['files'].items():
         relative = Path(name)
         if relative.is_absolute() or '..' in relative.parts:

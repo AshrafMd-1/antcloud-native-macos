@@ -12,14 +12,14 @@ int main()
     event.keysym.scancode = SDL_SCANCODE_LGUI;
     event.keysym.mod = KMOD_LGUI | KMOD_RCTRL | KMOD_CAPS;
     auto remote = AntCloudInput::mapMacModifiers(event);
-    assert(remote.keysym.scancode == SDL_SCANCODE_LALT);
-    assert(remote.keysym.mod == (KMOD_LALT | KMOD_RCTRL | KMOD_CAPS));
+    assert(remote.keysym.scancode == SDL_SCANCODE_LCTRL);
+    assert(remote.keysym.mod == (KMOD_LCTRL | KMOD_RGUI | KMOD_CAPS));
     assert(remote.state == event.state && remote.type == event.type);
     assert(event.keysym.scancode == SDL_SCANCODE_LGUI); // Never mutate physical state.
 
-    const SDL_Scancode physical[] = {SDL_SCANCODE_RGUI, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT, SDL_SCANCODE_LCTRL, SDL_SCANCODE_F1};
-    const SDL_Scancode expected[] = {SDL_SCANCODE_RALT, SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI, SDL_SCANCODE_LCTRL, SDL_SCANCODE_F1};
-    for (int i = 0; i < 5; ++i) {
+    const SDL_Scancode physical[] = {SDL_SCANCODE_RGUI, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT, SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL, SDL_SCANCODE_F1, SDL_SCANCODE_BACKSPACE, SDL_SCANCODE_DELETE};
+    const SDL_Scancode expected[] = {SDL_SCANCODE_RCTRL, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT, SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI, SDL_SCANCODE_F1, SDL_SCANCODE_BACKSPACE, SDL_SCANCODE_DELETE};
+    for (int i = 0; i < 8; ++i) {
         event.type = SDL_KEYUP;
         event.state = SDL_RELEASED;
         event.keysym.scancode = physical[i];
@@ -33,16 +33,23 @@ int main()
     event.keysym.scancode = SDL_SCANCODE_A;
     event.keysym.mod = KMOD_LCTRL;
     assert(AntCloudInput::mapMacModifiers(event).keysym.scancode == SDL_SCANCODE_A);
-    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_LCTRL);
+    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_LGUI);
     event.keysym.mod = KMOD_RALT;
-    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_RGUI);
+    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == KMOD_RALT);
+
+    event.keysym.mod = KMOD_LGUI | KMOD_RALT | KMOD_LSHIFT;
+    assert(AntCloudInput::mapMacModifiers(event).keysym.mod == (KMOD_LCTRL | KMOD_RALT | KMOD_LSHIFT));
 
     char text[200];
     AntCloudStats::format({32, 120, 3, 58.5, 5.8, 1440, 900}, text, sizeof(text));
-    assert(std::string(text) == "RTT 32 ms | Loss 2.5% | 58.5 FPS | 5.8 Mbps | 1440x900");
+    assert(std::string(text) == "RTT 32 ms | Loss 2.5% | 58.5 FPS | 5.8 Mbps | 1440x900\nTime left N/A");
     AntCloudStats::format({0, 0, 0, 0, 0, 1280, 720}, text, sizeof(text));
     assert(std::string(text).find("RTT N/A | Loss N/A") == 0);
     assert(std::string(text).find("N/A FPS | N/A") != std::string::npos);
+    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080, 750}, text, sizeof(text));
+    assert(std::string(text).find("\nTime left 750 min") != std::string::npos);
+    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080, 0}, text, sizeof(text));
+    assert(std::string(text).find("\nTime left 0 min") != std::string::npos);
     char tiny[5] = {};
     AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080}, tiny, sizeof(tiny));
     assert(tiny[4] == '\0');

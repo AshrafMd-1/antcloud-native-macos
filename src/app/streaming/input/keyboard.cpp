@@ -251,7 +251,7 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
     if ((event->state == SDL_PRESSED) &&
             (event->keysym.mod & KMOD_CTRL) &&
 #ifdef Q_OS_DARWIN
-            (event->keysym.mod & KMOD_GUI) && // Physical Command; remote Alt.
+            (event->keysym.mod & KMOD_GUI) && // Physical Command; remote Ctrl.
 #else
             (event->keysym.mod & KMOD_ALT) &&
 #endif

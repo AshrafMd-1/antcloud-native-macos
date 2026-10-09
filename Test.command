@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 antcloud_root="$PWD"
 antcloud_qmake_args=()
+python3 tools/test_fetch_sdk.py
 if [[ "$(uname -s)" == Darwin ]]; then
   antcloud_qmake="$(brew --prefix qtbase)/bin/qmake"
   [[ -d src/libs/mac ]] || { echo 'Run python3 tools/fetch_sdk.py first.'; exit 1; }

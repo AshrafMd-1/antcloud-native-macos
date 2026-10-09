@@ -8,18 +8,18 @@ namespace AntCloudInput {
 inline SDL_KeyboardEvent mapMacModifiers(SDL_KeyboardEvent event)
 {
     switch (event.keysym.scancode) {
-    case SDL_SCANCODE_LGUI: event.keysym.scancode = SDL_SCANCODE_LALT; break;
-    case SDL_SCANCODE_RGUI: event.keysym.scancode = SDL_SCANCODE_RALT; break;
-    case SDL_SCANCODE_LALT: event.keysym.scancode = SDL_SCANCODE_LGUI; break;
-    case SDL_SCANCODE_RALT: event.keysym.scancode = SDL_SCANCODE_RGUI; break;
+    case SDL_SCANCODE_LGUI: event.keysym.scancode = SDL_SCANCODE_LCTRL; break;
+    case SDL_SCANCODE_RGUI: event.keysym.scancode = SDL_SCANCODE_RCTRL; break;
+    case SDL_SCANCODE_LCTRL: event.keysym.scancode = SDL_SCANCODE_LGUI; break;
+    case SDL_SCANCODE_RCTRL: event.keysym.scancode = SDL_SCANCODE_RGUI; break;
     default: break;
     }
     const auto physical = event.keysym.mod;
-    event.keysym.mod &= ~(KMOD_ALT | KMOD_GUI);
-    if (physical & KMOD_LGUI) event.keysym.mod |= KMOD_LALT;
-    if (physical & KMOD_RGUI) event.keysym.mod |= KMOD_RALT;
-    if (physical & KMOD_LALT) event.keysym.mod |= KMOD_LGUI;
-    if (physical & KMOD_RALT) event.keysym.mod |= KMOD_RGUI;
+    event.keysym.mod &= ~(KMOD_CTRL | KMOD_GUI);
+    if (physical & KMOD_LGUI) event.keysym.mod |= KMOD_LCTRL;
+    if (physical & KMOD_RGUI) event.keysym.mod |= KMOD_RCTRL;
+    if (physical & KMOD_LCTRL) event.keysym.mod |= KMOD_LGUI;
+    if (physical & KMOD_RCTRL) event.keysym.mod |= KMOD_RGUI;
     return event;
 }
 }

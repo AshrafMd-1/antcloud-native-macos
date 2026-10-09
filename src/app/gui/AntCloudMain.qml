@@ -344,10 +344,18 @@ ApplicationWindow {
                             onClicked: appWindow.controller.start()
                         }
                     }
+                    Label {
+                        objectName: "remainingTimeLabel"
+                        Layout.fillWidth: true
+                        text: appWindow.controller.remainingMinutes >= 0
+                            ? "Time left: " + appWindow.controller.remainingMinutes + " minutes"
+                            : "Time left: unavailable"
+                        wrapMode: Text.WordWrap
+                    }
                     GridLayout {
                         Layout.fillWidth: true
                         columnSpacing: 18
-                        columns: appWindow.width < 720 ? 2 : 3
+                        columns: 2
                         enabled: !appWindow.controller.busy
                         rowSpacing: 12
 
@@ -401,15 +409,33 @@ ApplicationWindow {
                             ComboBox {
                                 id: bitratePicker
 
-                                property var rates: [3000, 6000, 12000, 20000, 40000]
+                                property var rates: appWindow.controller.bitrateChoices
 
                                 Accessible.name: "Video bitrate"
                                 Layout.fillWidth: true
                                 objectName: "bitratePicker"
                                 currentIndex: Math.max(0, rates.indexOf(appWindow.controller.bitrate))
-                                model: ["3 Mbps · low bandwidth", "6 Mbps · balanced", "12 Mbps · high", "20 Mbps · very high", "40 Mbps · maximum"]
+                                model: rates.map(function(rate) { return (rate / 1000) + " Mbps" })
 
                                 onActivated: appWindow.controller.bitrate = rates[currentIndex]
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 180
+                            Layout.preferredWidth: 220
+
+                            Label {
+                                font.weight: Font.DemiBold
+                                text: "Video codec"
+                            }
+                            ComboBox {
+                                Accessible.name: "Video codec"
+                                Layout.fillWidth: true
+                                objectName: "codecPicker"
+                                currentIndex: appWindow.controller.codecIndex
+                                model: ["H.264 · default", "H.265 / HEVC", "AV1"]
+                                onActivated: appWindow.controller.codecIndex = currentIndex
                             }
                         }
                     }
@@ -633,14 +659,21 @@ ApplicationWindow {
                 objectName: "cancelShutdown"
                 text: "Cancel"
 
+                Keys.priority: Keys.BeforeItem
+                Keys.onTabPressed: confirmShutdown.forceActiveFocus(Qt.TabFocusReason)
+                Keys.onBacktabPressed: confirmShutdown.forceActiveFocus(Qt.BacktabFocusReason)
                 Keys.onEnterPressed: clicked()
                 Keys.onReturnPressed: clicked()
                 onClicked: shutdownDialog.close()
             }
             Button {
+                id: confirmShutdown
                 objectName: "confirmShutdown"
                 text: "Shutdown VM"
 
+                Keys.priority: Keys.BeforeItem
+                Keys.onTabPressed: cancelShutdown.forceActiveFocus(Qt.TabFocusReason)
+                Keys.onBacktabPressed: cancelShutdown.forceActiveFocus(Qt.BacktabFocusReason)
                 Keys.onEnterPressed: clicked()
                 Keys.onReturnPressed: clicked()
                 onClicked: {
@@ -725,7 +758,7 @@ ApplicationWindow {
         width: Math.min(540, appWindow.width - 40)
 
         contentItem: Label {
-            text: "Windows modifiers\nCommand → Alt · Option → Windows · Control → Ctrl\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\nControl + Command + Shift + V: type Mac clipboard text (host support required)\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate and stream dimensions. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
+            text: "Windows modifiers\nCommand → Ctrl · Option → Alt · Control → Windows\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\nControl + Command + Shift + V: type Mac clipboard text (host support required)\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate, stream dimensions and provider-reported minutes left. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
             wrapMode: Text.WordWrap
         }
     }

@@ -28,7 +28,12 @@ class UiController : public QObject {
     Q_PROPERTY(int resolutionIndex MEMBER resolutionIndex NOTIFY changed)
     Q_PROPERTY(int fpsIndex MEMBER fpsIndex NOTIFY changed)
     Q_PROPERTY(int bitrate MEMBER bitrate NOTIFY changed)
+    Q_PROPERTY(QVariantList bitrateChoices READ bitrateChoices CONSTANT)
+    Q_PROPERTY(int codecIndex MEMBER codecIndex NOTIFY changed)
+    Q_PROPERTY(int remainingMinutes MEMBER remainingMinutes NOTIFY changed)
 public:
+    QVariantList bitrateChoices() const { return {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000}; }
+    int codecIndex=0, remainingMinutes=-1;
     bool signedIn=false, busy=false, active=false, fullscreen=true, relativeMouse=true, showStats=true;
     QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice, streamWarning, shutdownStatus;
     int elapsed=83, resolutionLimit=1080, resolutionIndex=0, fpsIndex=1, bitrate=6000, loginCalls=0, shutdownCalls=0;
@@ -40,7 +45,7 @@ public:
     Q_INVOKABLE void shutdown() { ++shutdownCalls; disconnectStream(); }
     Q_INVOKABLE void exportDiagnostics(QUrl) {}
     Q_INVOKABLE void clearDiagnostics() {}
-    void reset() { signedIn=busy=active=false; resolutionIndex=0; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); streamWarning.clear(); shutdownStatus.clear(); loginCalls=shutdownCalls=0; emit changed(); }
+    void reset() { signedIn=busy=active=false; resolutionIndex=0; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); streamWarning.clear(); shutdownStatus.clear(); loginCalls=shutdownCalls=0; bitrate=6000; fpsIndex=1; codecIndex=0; remainingMinutes=-1; emit changed(); }
 signals:
     void changed();
 };
@@ -98,8 +103,34 @@ private slots:
         QTest::keyClick(window,Qt::Key_Tab);
         auto confirm=window->findChild<QQuickItem*>("confirmShutdown"); QVERIFY(confirm);
         QCOMPARE(window->activeFocusItem(),confirm);
+        QTest::keyClick(window,Qt::Key_Tab,Qt::ShiftModifier);
+        QCOMPARE(window->activeFocusItem(),cancel);
+        QCOMPARE(controller.shutdownCalls,0);
+        QTest::keyClick(window,Qt::Key_Tab);
+        QCOMPARE(window->activeFocusItem(),confirm);
         QTest::keyClick(window,Qt::Key_Return);
         QCOMPARE(controller.shutdownCalls,1);
+        QVERIFY(QMetaObject::invokeMethod(dialog,"open")); QTest::qWait(200);
+        QCOMPARE(window->activeFocusItem(),cancel);
+        QTest::keyClick(window,Qt::Key_Return);
+        QCOMPARE(controller.shutdownCalls,1); // Reopen returns to the safe default.
+    }
+    void codecBitrateAndReportedTime() {
+        controller.signedIn=true; controller.codecIndex=1; controller.bitrate=25000;
+        controller.remainingMinutes=750; emit controller.changed();
+        auto codec=window->findChild<QObject*>("codecPicker"); QVERIFY(codec);
+        QTRY_COMPARE(codec->property("currentIndex").toInt(),1);
+        QCOMPARE(codec->property("count").toInt(),3);
+        auto bitrate=window->findChild<QObject*>("bitratePicker"); QVERIFY(bitrate);
+        QCOMPARE(bitrate->property("count").toInt(),13);
+        QTRY_COMPARE(bitrate->property("currentText").toString(),QString("25 Mbps"));
+        auto remaining=window->findChild<QObject*>("remainingTimeLabel"); QVERIFY(remaining);
+        QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: 750 minutes"));
+        controller.remainingMinutes=-1; emit controller.changed();
+        QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: unavailable"));
+        codec->setProperty("currentIndex",2);
+        QVERIFY(QMetaObject::invokeMethod(codec,"activated",Q_ARG(int,2)));
+        QCOMPARE(controller.codecIndex,2);
     }
     void retiredResolutionAndPowerStatus() {
         controller.signedIn=true; controller.detail="Disconnected.";
@@ -146,6 +177,9 @@ private slots:
     }
     void snapshots_data() {
         QTest::addColumn<int>("width"); QTest::addColumn<bool>("dark"); QTest::addColumn<QString>("state");
+        QTest::newRow("codec-600-light") << 600 << false << "hevc";
+        QTest::newRow("codec-860-dark") << 860 << true << "av1";
+        QTest::newRow("time-600-light") << 600 << false << "quota";
         QTest::newRow("login-600-light") << 600 << false << "login";
         QTest::newRow("login-860-light") << 860 << false << "login";
         QTest::newRow("ready-860-light") << 860 << false << "ready";
@@ -173,12 +207,15 @@ private slots:
         if(state!="login") { controller.signedIn=true; controller.detail="Your Windows VM is ready to connect."; }
         if(state=="experimental") controller.resolutionIndex=2;
         if(state=="4k") controller.resolutionIndex=3;
+        if(state=="hevc") controller.codecIndex=1;
+        if(state=="av1") controller.codecIndex=2;
+        if(state=="quota") controller.remainingMinutes=750;
         if(state=="booting") controller.start();
         if(state=="shutdown") { controller.detail="Disconnected."; controller.shutdownStatus="Shutdown requested. Check the AntCloud dashboard for the final VM power state."; }
         if(state=="error") { controller.detail="Disconnected. You can try connecting again."; controller.error="The provider ended the session because video did not start. Check the dashboard, then retry."; }
         emit controller.changed(); QTest::qWait(200);
-        if (state=="experimental" || state=="4k") {
-            for (const char* name : {"resolutionPicker", "frameRatePicker", "bitratePicker"}) {
+        if (state=="experimental" || state=="4k" || state=="hevc" || state=="av1") {
+            for (const char* name : {"resolutionPicker", "frameRatePicker", "bitratePicker", "codecPicker"}) {
                 auto picker=window->findChild<QQuickItem*>(name); QVERIFY(picker);
                 auto text=picker->property("contentItem").value<QQuickItem*>(); QVERIFY(text);
                 const QFontMetricsF metrics(picker->property("font").value<QFont>());

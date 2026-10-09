@@ -1,104 +1,113 @@
-# AntCloud Native 1.0.3 (ALPHA && UNOFFCIAL)
+# AntCloud Native
 
-One Mac app to sign in, start your Windows VM, stream games and disconnect or request shutdown. Terminal is only needed to build it. This is a personal client using Moonlight 6.2.0, not an official AntCloud app.
+An unofficial macOS client for streaming an AntCloud Windows VM, built on Moonlight 6.2.0. Sign in, connect, play, and disconnect from one native app.
 
-## Install or update
+The account and settings interface uses Qt, provider networking runs on a C++ worker thread, and Moonlight's SDL engine handles video, audio and input. Terminal is needed only to build the app. Normal use needs no Python controller, browser stream or separate Moonlight installation.
 
-See [setup.md](setup.md) for the complete install, update and cleanup steps. Build on your Mac:
+Current source version: **1.0.4**. This is a personal, experimental client and is not affiliated with or endorsed by AntCloud or Moonlight. AntCloud's provider integration is based on observed behavior and may change.
 
-```bash
-cd ~/Downloads/AntCloudNative
-bash Build-Mac.command
-bash Open-App.command
-```
+Project: [antcloud-native-macos](https://github.com/AshrafMd-1/antcloud-native-macos) · [Published releases](https://github.com/AshrafMd-1/antcloud-native-macos/releases). The previous published release is [v1.0.3](https://github.com/AshrafMd-1/antcloud-native-macos/releases/tag/v1.0.3).
 
-Drag `dist/AntCloudNative.app` into Applications for daily use. Close the old app, old Terminal session helper and any active AntCloud Chrome stream before connecting. Start with **720p / 60 FPS / 6 Mbps**. Sign in inside the app; remembered login uses Keychain. Your password is never saved. Pairing happens automatically, without another app or a Terminal PIN prompt.
+## Changes in 1.0.4
 
-The download is full source with a Mac build script. It contains no prebuilt Mac app; the build bundles its runtime libraries so normal use needs no Homebrew, Python or Terminal.
+The Mac modifier mapping now follows familiar copy/paste shortcuts: Command→Windows Ctrl, Option→Alt, Control→Windows key. Version 1.0.3 used Command→Alt, Option→Windows and Control→Ctrl. Other keys, including Backspace and Delete, retain their existing behavior. Local Control+Command+Shift shortcuts stay the same.
 
-## What it does
+This update adds provider-reported remaining minutes, codec selection and more bitrate choices, fixes keyboard navigation in the shutdown confirmation, and tightens SDK file verification. Project documentation is consolidated into README, setup and AGENTS; the complete source and Git history replace archived patch documents.
 
-- Native video, audio, fullscreen and relative mouse capture for continuous game camera movement.
-- Windows keyboard shortcuts with the strict modifier mapping below.
-- Resolution, frame rate, bitrate/quality and compact stream statistics.
-- Connection stages: provider session → VM boot → native host → Mac pairing → video/audio.
-- Local controls: Resume, Stop stream and confirmed Shutdown VM.
-- Optional saved login and sign-out; bounded diagnostic history in memory, exported only on request.
+## Getting started
 
-**1.0.3:** the experimental resolution choices now show their exact pixel dimensions. Short forms are centered vertically; connection views scroll when needed. Section spacing is consistent, Disconnect queues cancellation once, and the app/bundle versions come from one version file. The complete source includes Git ignore rules, build/setup documentation and a manual GitHub release guide.
+Follow [setup.md](setup.md) to build and install the app on your Mac. The source includes pinned public dependencies; the build downloads and verifies the Mac streaming SDK separately. No prebuilt Mac app is included.
 
-The previous reconnect, Stop/Shutdown message and statistics fixes are included. The unsupported 1440×900 preset remains removed; its saved selection becomes 1080p, while saved 1440p/4K retain their dimensions.
+Choose **720p or 1080p** for normal use, within your account limit. **720p / 60 FPS / 6 Mbps** is a conservative testing profile. Sign in inside the app and select Connect. The app handles VM startup, host discovery and pairing before opening the stream. There is no Terminal PIN prompt.
 
-## Disconnect or shutdown?
+## Features
 
-| Action | What happens |
-| --- | --- |
-| Disconnect / Stop stream | Ends this Mac's connection and returns to the app. Sends no explicit VM shutdown command. |
-| Shutdown VM | Asks AntCloud to shut down the VM, once, after your confirmation. Save your Windows work first. |
-| Sign out | Removes the remembered account token; available after disconnecting. |
-| Quit app | Closes the Mac app. Does not send an explicit shutdown request. |
+- Native video and audio, fullscreen, and relative mouse capture for continuous camera movement.
+- Windows keyboard shortcuts and local stream controls.
+- Resolution, frame rate, bitrate and codec settings, with compact stream statistics and remaining account time.
+- Connection progress through provider session, VM startup, host contact, pairing and streaming.
+- Resume, Stop stream and confirmed Shutdown VM controls.
+- Optional remembered login through macOS Keychain.
+- Bounded diagnostic history in memory, exported only when requested.
 
-AntCloud may stop an idle VM after disconnection. Switching to Chrome may work after the native session ends, but this app cannot guarantee the provider's handoff or idle policy. “Shutdown requested” means the request was sent; check the dashboard for the final power state. You can reconnect from the same app when Connect becomes available; a powered-off VM may need to boot again.
+## Stream controls
 
-## Keyboard cheat sheet
+**Disconnect / Stop stream** ends this Mac's connection and returns to the app. **Quit** closes the app. Neither sends an explicit VM shutdown request.
 
-| Mac key while streaming | Windows key |
-| --- | --- |
-| Command | Alt |
-| Option | Windows |
-| Control | Ctrl |
-| Shift | Shift |
+**Shutdown VM** sends one shutdown request after local confirmation. Save your Windows work first. “Shutdown requested” describes the request, not a verified power state; check the AntCloud dashboard for the final state.
 
-Use **Control+A/C/V/X/Z** for Windows select-all/copy/paste/cut/undo. **Command+Tab** becomes Windows Alt+Tab while system-key capture is active. macOS handles Fn/Globe; a separate Windows Fn modifier is not guaranteed.
+Reconnect when Connect becomes available. A powered-off VM may need to boot again. AntCloud may stop an idle VM after disconnection, and switching between native and browser streams depends on the provider's session policy.
 
-For local controls, hold **Control + Command + Shift**, then press:
+## Keyboard and mouse
+
+While streaming, the physical modifier mapping is:
+
+- **Command → Windows Ctrl**
+- **Option → Alt**
+- **Control → Windows key**
+- **Shift → Shift**
+
+Use **Command+A/C/V/X/Z** for Windows select-all, copy, paste, cut and undo. **Option+Tab** becomes Windows Alt+Tab when system-key capture is enabled. macOS handles Fn/Globe.
+
+Hold **Control + Command + Shift**, then press a key for local controls:
 
 | Key | Action |
 | --- | --- |
-| P | Release capture and open local controls; Resume returns to the game |
-| Z | Toggle mouse capture; releasing shows local controls |
+| P | Release input capture and open local controls; Resume returns to the game |
+| Z | Toggle mouse capture; releasing opens local controls |
 | Q | Stop stream and return to the app |
 | X | Toggle fullscreen |
-| S | Show/hide stream statistics |
+| S | Show or hide statistics |
 | M | Switch relative game mouse / absolute desktop mouse |
-| V | Type Mac clipboard text into the remote app, if the host supports text input |
-| C | Show/hide cursor in absolute mouse mode |
+| V | Type Mac clipboard text into the remote app, if supported by the host |
+| C | Show or hide the cursor in absolute mouse mode |
 | D | Minimize the stream window |
 | L | Toggle pointer confinement in desktop mouse mode |
 | K | Toggle capture of system keyboard shortcuts |
 | E | Stop stream and exit the app |
 
-The clipboard shortcut types text; it does not synchronize both clipboards or transfer files. **Command+Q** quits the local app when its regular app window has focus. During streaming, use the local shortcuts above.
+Relative mouse mode suits games; absolute mode suits the Windows desktop. Clipboard typing does not synchronize clipboards or transfer files. Command+Q quits when the regular Mac app window has focus; use the local controls while streaming.
 
-## Settings and statistics
+## Stream settings
 
-Resolution choices remain subject to your account limit:
+Available resolutions, subject to your account limit:
 
-| Resolution | Status |
-| --- | --- |
-| 1280×720 (720p) | Standard |
-| 1920×1080 (1080p) | Standard |
-| 2560×1440 (1440p) | Experimental |
-| 3840×2160 (4K) | Experimental |
+- **1280 × 720 (720p)** — standard.
+- **1920 × 1080 (1080p)** — standard.
+- **2560 × 1440 (1440p)** — experimental.
+- **3840 × 2160 (4K)** — experimental.
 
-Choose 30/60/120 FPS and 3/6/12/20/40 Mbps. Higher settings require enough host/network capacity; experimental resolutions may not match the VM display as expected. Fullscreen preserves aspect ratio, so differing Mac/VM ratios can leave bars. A stream setting does not install new Windows display-driver modes.
+Choose **30, 60 or 120 FPS** and **2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35 or 40 Mbps**. Changes apply to the next connection. Higher settings need enough host and network capacity. Experimental 1440p/4K resolutions may work inconsistently or fail on a given VM; selecting a stream resolution does not install Windows display modes. Fullscreen preserves aspect ratio, which can leave bars.
 
-Statistics show round-trip time (RTT), network-dropped **video frames**, FPS, received video bitrate and requested dimensions. RTT is not total input latency; frame loss is not a packet-loss count.
+**Video codec** selects how video is compressed. **H.264** is the default and recommended starting point. **H.265/HEVC** and **AV1** are experimental choices that need compatible host encoding and Mac decoding. The existing engine negotiates supported formats and can fall back; selecting a codec does not add support to the provider. These choices are ready to use when the VM supports them, without changing this settings UI.
 
-The selected bitrate is a request/bandwidth budget; the overlay measures received compressed video only. Moonlight reserves bandwidth for recovery and other traffic, and the encoder need not use the whole budget for a static/simple scene. A lower measured value alone does not establish a stream fault. Keep resolution/FPS constant, reconnect after changing bitrate, and compare moving gameplay. See [docs/stream-statistics.md](docs/stream-statistics.md) for details. The included statistics fix corrects a small measurement-window undercount. The Mac fixture runner uses the existing SDK libraries; these changes do not increase the provider encoder budget.
+## Reading the statistics
 
-## Verification and source
+- **RTT:** estimated round-trip time to the streaming host, not total input-to-picture latency or the game's multiplayer ping.
+- **FPS:** incoming video frame rate averaged over roughly two seconds, not the game's rendering rate. Static desktop content may produce fewer frames.
+- **Loss:** missing video frames inferred from frame-number gaps, not raw packet loss. A displayed 0.0% is rounded.
+- **Mbps:** compressed video payload received over completed 250 ms samples covering up to 2.5 seconds. Audio, headers and recovery traffic are excluded.
+- **Time left:** latest remaining minutes reported by AntCloud. Account sign-in can supply a balance; the stream uses provider updates. Unavailable data shows N/A. This is not a locally estimated countdown or a guarantee of billing/power behavior.
+- **Dimensions:** decoder-reported dimensions when available, otherwise the requested dimensions; these differ from the Mac screen size.
 
-```bash
-bash Test.command
-```
+The bitrate setting is a request/bandwidth budget. Recovery traffic, host limits and scene complexity can make the measured video rate lower. A static desktop using little bandwidth does not establish a fault. To compare settings, keep resolution, FPS and network unchanged, reconnect after each bitrate change, and watch the same moving gameplay for 20–30 seconds. Increased RTT, loss or stutter at higher bitrates can indicate congestion. No measured native/browser performance comparison is claimed.
 
-Local tests do not contact your paid VM or change your real Keychain. Reconnect and shutdown regressions, input/stats, protocol, controls and interface checks passed on Linux; the full Linux release build passed. **Build and check 1.0.3 on the target Mac before publishing a binary release**: [docs/mac-test.md](docs/mac-test.md). Detailed review and limits: [docs/validation.md](docs/validation.md).
+## Privacy and diagnostics
 
-The streaming engine keeps its hardware decoding and platform fallbacks. This is a tested personal source release, not a certified/notarized public distribution. Build tools and SDK stay in the source folder; ordinary use creates no automatic diagnostic files or background service. See setup.md to reclaim build space.
+Passwords are never saved. Remembered login stores only the account token in Keychain; Sign out removes it. Preferences and the pairing identity use normal macOS per-user settings.
 
-Full modified source and pinned public dependency source are in `src/`. Native lifecycle code is `src/app/antcloud/`; UI is `src/app/gui/AntCloudMain.qml`. [AGENTS.md](AGENTS.md) describes development contracts. `source-provenance.json`, `source-manifest.json` and the three ordered patches in `docs/` record provenance and changes. Preserve GPL-3.0 and upstream notices when publishing on GitHub. Build output, SDK binaries, credentials and private captures are excluded.
+Diagnostic history holds at most 64 safe messages in memory. Each entry is limited to 512 characters, including its elapsed-time prefix. **Help → Export diagnostic report** saves a redacted report to a location you choose; **Help → Clear diagnostic history** clears the history. There are no automatic diagnostic log files. Reports exclude passwords, tokens, PINs, VM addresses and raw provider payloads. Do not share preferences or Keychain contents.
 
-## GitHub
+## Source and development
 
-Suggested repository name: **`antcloud-native-macos`**. About: “Unofficial native macOS client for AntCloud Windows VMs, built on Moonlight.” The manual repository setup and single v1.0.3 release steps are in [docs/github-publishing.md](docs/github-publishing.md), with copy-ready [release notes](docs/github-release-1.0.3.md). Verify the live Mac Stop/reconnect and Shutdown/reconnect flow before publishing the release.
+[AGENTS.md](AGENTS.md) contains the architecture, development contracts, test commands, live Mac checklist, validation record and source packaging rules.
+
+The complete modified engine and pinned public dependency sources are in `src/`. Native account/session code is in `src/app/antcloud/`, and the interface is `src/app/gui/AntCloudMain.qml`. `source-provenance.json` records upstream revisions and the SDK digest; `source-manifest.json` records source hashes. The complete modified source is included directly; change history is maintained in the project repository. No `docs/` folder or patch archive is required to build.
+
+Automated fixtures isolate real accounts, Keychain and provider access. Previous Linux builds and fixtures passed; they cannot establish live Mac decoding, Keychain access, pairing or VM power behavior. Local builds use an ad-hoc signature and are not notarized distributions.
+
+## License and attribution
+
+AntCloud Native is based on Moonlight PC 6.2.0. Moonlight's GPL-3.0 license, copyright notices and dependency licenses are retained in `src/`; see [LICENSE](LICENSE) and [src/LICENSE](src/LICENSE). New AntCloud account, session, UI and input modifications are provided under GPL-3.0-or-later. The combined distribution must satisfy upstream GPL-3.0 requirements.
+
+The Mac SDK comes from the pinned official Moonlight dependency release and is verified against its recorded SHA-256. Preserve SDK and dependency license notices in binary distributions. Build output, SDK binaries, credentials and private captures are excluded from the source package.

@@ -17,7 +17,7 @@ for antcloud_module in qtbase qtdeclarative qtsvg qttools qtwebsockets; do
 done
 antcloud_qmake="$(brew --prefix qtbase)/bin/qmake"
 antcloud_version="$(cat src/app/antcloud/version.txt)"
-# Homebrew Qt bottles target their host OS. Do not label such a bundle as macOS 13 compatible.
+# Target the build host's major version because Homebrew Qt bottles may require it.
 antcloud_macos_target="$(sw_vers -productVersion | cut -d. -f1).0"
 antcloud_deploy=''
 for antcloud_module in qttools qtbase; do

@@ -1,6 +1,7 @@
 #include <Limelight.h>
 #include "ffmpeg.h"
 #include "antcloudstats.h"
+#include "antcloud/streambridge.h"
 #include "utils.h"
 #include "streaming/session.h"
 
@@ -2131,7 +2132,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
                                    lastTwoWndStats.networkDroppedFrames, lastTwoWndStats.receivedFps,
                                    m_BwTracker.GetAverageMbps(),
                                    m_VideoDecoderCtx ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
-                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->height : m_OriginalVideoHeight},
+                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->height : m_OriginalVideoHeight,
+                                   AntCloud::StreamBridge::remainingMinutes()},
                                  Session::get()->getOverlayManager().getOverlayText(Overlay::OverlayDebug),
                                  Session::get()->getOverlayManager().getOverlayMaxTextLength());
             Session::get()->getOverlayManager().setOverlayTextUpdated(Overlay::OverlayDebug);

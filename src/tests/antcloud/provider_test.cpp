@@ -264,12 +264,38 @@ private slots:
         QVERIFY(!ended.first()[0].toString().isEmpty()); // Genuine next-session error is retained.
     }
     void selectedBitrateReachesProvider() {
-        fixture->expectedBitrate = 20000;
+        fixture->expectedBitrate = 25000;
         QSignalSpy host(worker, &ProviderWorker::hostAvailable);
         QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
-            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,20000));
+            Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,25000));
         QVERIFY(host.wait(3000));
         QVERIFY(!fixture->wrongQuery); // Inspect the actual received WebSocket request.
+    }
+    void reportedTimeIsValidatedAndResetAcrossSessions() {
+        QSignalSpy host(worker, &ProviderWorker::hostAvailable);
+        QSignalSpy time(worker, &ProviderWorker::remainingMinutesChanged);
+        QSignalSpy ended(worker, &ProviderWorker::ended);
+        auto start = [this] {
+            QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection,
+                Q_ARG(int,1280), Q_ARG(int,720), Q_ARG(int,60), Q_ARG(int,6000));
+        };
+        start(); QVERIFY(host.wait(3000));
+        QCOMPARE(StreamBridge::remainingMinutes(), -1);
+        auto report = [this](QJsonValue minutes) {
+            QMetaObject::invokeMethod(fixture, [this, minutes] {
+                fixture->peer->sendTextMessage(eventPacket("control", QJsonObject{{"timeLeft", minutes}}));
+            }, Qt::QueuedConnection);
+        };
+        report(750); QTRY_COMPARE(StreamBridge::remainingMinutes(), 750);
+        QCOMPARE(time.last()[0].toInt(), 750);
+        report("750"); QTRY_COMPARE(StreamBridge::remainingMinutes(), -1);
+        report(0); QTRY_COMPARE(StreamBridge::remainingMinutes(), 0);
+        QCOMPARE(ended.count(), 0); // Reporting quota does not guess a shutdown.
+        QMetaObject::invokeMethod(worker, "stop", Qt::BlockingQueuedConnection);
+        QCOMPARE(StreamBridge::remainingMinutes(), -1);
+        host.clear(); start(); QVERIFY(host.wait(3000));
+        QCOMPARE(StreamBridge::remainingMinutes(), -1);
+        report(500); QTRY_COMPARE(StreamBridge::remainingMinutes(), 500);
     }
     void malformedReadinessNeverStartsVideo() {
         fixture->ready = true; fixture->malformed = true;

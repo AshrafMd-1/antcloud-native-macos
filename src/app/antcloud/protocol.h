@@ -5,18 +5,35 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <cmath>
+#include <limits>
 
 namespace AntCloud {
 constexpr int StartupTimeoutMs = 300000;
 inline int savedResolutionIndex(int index, int schema) {
     if (schema < 2) {
-        if (index == 2) return 1; // Retired custom size becomes 1080p.
+        if (index == 2) return 1; // Schema 1 index 2 was 1440×900; migrate it to 1080p.
         if (index == 3 || index == 4) return index - 1;
     }
     return index >= 0 && index <= 3 ? index : 0;
 }
+constexpr int BitrateChoices[] = {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000};
 inline int savedBitrate(int bitrate) {
-    return bitrate == 3000 || bitrate == 6000 || bitrate == 12000 || bitrate == 20000 || bitrate == 40000 ? bitrate : 6000;
+    for (int choice : BitrateChoices) if (bitrate == choice) return bitrate;
+    return 6000;
+}
+inline int savedCodecIndex(int index) { return index >= 0 && index <= 2 ? index : 0; }
+inline int providerMinutes(const QJsonValue& value) {
+    if (!value.isDouble()) return -1;
+    const double minutes = value.toDouble();
+    return std::isfinite(minutes) && minutes >= 0 && minutes <= std::numeric_limits<int>::max()
+        && std::floor(minutes) == minutes ? int(minutes) : -1;
+}
+inline int accountRemainingMinutes(const QJsonObject& value) {
+    const auto user = value.value("user").toObject();
+    const int total = providerMinutes(user.value("totalTimeMonth"));
+    const int used = providerMinutes(user.value("timeUsedMonth"));
+    return total > 0 && used >= 0 ? qMax(0, total - used) : -1;
 }
 inline bool validToken(const QString& token) {
     static const QRegularExpression pattern("^[A-Za-z0-9_.~+/=-]{1,16384}$");

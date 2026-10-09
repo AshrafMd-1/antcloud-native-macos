@@ -33,12 +33,14 @@ signals:
     void ended(QString message);
     void notice(QString message);
     void shutdownRequested();
+    void remainingMinutesChanged(int minutes);
 private:
     using Reply = std::function<void(int, QJsonObject)>;
     void request(const QString& path, const QJsonObject& body, bool post, bool session, Reply callback);
     void authenticateToken(const QString& token);
     void acceptAccount(const QJsonObject& value, const QString& token, bool remember);
     void receive(const QString& packet);
+    void updateRemainingMinutes(int minutes);
     void poll();
     void checkConnection();
     void finish(const QString& message);

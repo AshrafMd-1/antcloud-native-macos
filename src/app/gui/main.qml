@@ -351,8 +351,7 @@ ApplicationWindow {
                 ToolTip.timeout: 3000
                 ToolTip.visible: hovered || visible
 
-                // Invisible until we get a callback notifying us that
-                // an update is available
+                // Stock Moonlight update checks are disabled for this fork.
                 visible: false
 
                 onClicked: {
@@ -366,11 +365,6 @@ ApplicationWindow {
                     ToolTip.text = qsTr("Update available for Moonlight: Version %1").arg(version)
                     updateButton.browserUrl = url
                     updateButton.visible = true
-                }
-
-                Component.onCompleted: {
-                    // This modified client is updated through its source package.
-                    // Stock Moonlight updates would discard the custom input mapping.
                 }
 
                 Keys.onDownPressed: {

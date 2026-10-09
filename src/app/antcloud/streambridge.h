@@ -31,6 +31,9 @@ public:
         QMutexLocker lock(&mutex());
         if (target()) QMetaObject::invokeMethod(target(), "pair", Qt::QueuedConnection, Q_ARG(QString, pin));
     }
+    // Only validated provider minutes cross into the decoder; no credentials or GUI access.
+    static void setRemainingMinutes(int value) { remainingMinutesFlag() = value >= 0 ? value : -1; }
+    static int remainingMinutes() { return remainingMinutesFlag().load(); }
     static void setActive(bool value) { activeFlag() = value; }
     static bool active() { return activeFlag().load(); }
     static void interrupt() {
@@ -41,6 +44,7 @@ private:
     static QObject*& target() { static QObject* value = nullptr; return value; }
     static QMutex& mutex() { static QMutex value; return value; }
     static std::atomic<bool>& enabledFlag() { static std::atomic<bool> value{false}; return value; }
+    static std::atomic<int>& remainingMinutesFlag() { static std::atomic<int> value{-1}; return value; }
     static std::atomic<bool>& activeFlag() { static std::atomic<bool> value{false}; return value; }
     static std::atomic<bool>& allowedFlag() { static std::atomic<bool> value{false}; return value; }
     static std::atomic<bool>& closingFlag() { static std::atomic<bool> value{false}; return value; }

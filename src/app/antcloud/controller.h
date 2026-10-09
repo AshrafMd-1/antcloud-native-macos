@@ -28,6 +28,9 @@ class Controller : public QObject {
     Q_PROPERTY(int resolutionIndex MEMBER m_ResolutionIndex NOTIFY settingsChanged)
     Q_PROPERTY(int fpsIndex MEMBER m_FpsIndex NOTIFY settingsChanged)
     Q_PROPERTY(int bitrate MEMBER m_Bitrate NOTIFY settingsChanged)
+    Q_PROPERTY(QVariantList bitrateChoices READ bitrateChoices CONSTANT)
+    Q_PROPERTY(int codecIndex MEMBER m_CodecIndex NOTIFY settingsChanged)
+    Q_PROPERTY(int remainingMinutes READ remainingMinutes NOTIFY changed)
     Q_PROPERTY(bool fullscreen MEMBER m_Fullscreen NOTIFY settingsChanged)
     Q_PROPERTY(bool relativeMouse MEMBER m_RelativeMouse NOTIFY settingsChanged)
     Q_PROPERTY(bool showStats MEMBER m_ShowStats NOTIFY settingsChanged)
@@ -45,6 +48,12 @@ public:
     QString shutdownStatus() const { return m_ShutdownStatus; }
     int elapsed() const { return m_Clock.isValid() ? int(m_Clock.elapsed() / 1000) : 0; }
     int resolutionLimit() const { return m_Limit; }
+    int remainingMinutes() const { return m_RemainingMinutes; }
+    QVariantList bitrateChoices() const {
+        QVariantList values;
+        for (int value : BitrateChoices) values.append(value);
+        return values;
+    }
     Q_INVOKABLE void initialize(QQuickWindow* window);
     Q_INVOKABLE void login(QString email, QString password, bool remember);
     Q_INVOKABLE void signOut();
@@ -75,7 +84,7 @@ private:
     NvComputer* m_Computer = nullptr;
     bool m_SignedIn = false, m_Active = false, m_ProviderActive = false, m_Pairing = false, m_Polling = false;
     bool m_Fullscreen = true, m_RelativeMouse = true, m_ShowStats = true;
-    int m_Limit = 0, m_ResolutionIndex = 0, m_FpsIndex = 1, m_Bitrate = 6000;
+    int m_Limit = 0, m_ResolutionIndex = 0, m_FpsIndex = 1, m_Bitrate = 6000, m_CodecIndex = 0, m_RemainingMinutes = -1;
     QString m_Phase = "idle", m_Detail = "Sign in to connect to your Windows VM.", m_Error, m_Notice, m_StreamWarning, m_ShutdownStatus;
     QStringList m_Diagnostics;
     QElapsedTimer m_Clock;

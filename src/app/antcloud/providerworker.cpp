@@ -59,6 +59,7 @@ void ProviderWorker::request(const QString& path, const QJsonObject& body, bool 
 }
 
 void ProviderWorker::restore() {
+    updateRemainingMinutes(-1);
     QString error;
     const QString token = TokenStore::load(error);
     if (token.isEmpty()) { emit account(false, 0, error); return; }
@@ -86,6 +87,7 @@ void ProviderWorker::login(QString email, QString password, bool remember) {
         emit authenticationFailed("Enter your AntCloud email and password."); return;
     }
     ++m_AuthGeneration; clearRequests(false); m_Token.clear();
+    updateRemainingMinutes(-1);
     emit stage("authenticating", "Signing in to AntCloud…");
     request("/api/users/login", {{"email", email.trimmed()}, {"password", password}}, true, false,
         [this, remember](int status, const QJsonObject& value) {
@@ -106,8 +108,14 @@ void ProviderWorker::login(QString email, QString password, bool remember) {
     password.fill(QChar('\0'));
 }
 
+void ProviderWorker::updateRemainingMinutes(int minutes) {
+    StreamBridge::setRemainingMinutes(minutes);
+    emit remainingMinutesChanged(minutes);
+}
+
 void ProviderWorker::acceptAccount(const QJsonObject& value, const QString& token, bool remember) {
     m_Token = token; m_Limit = accountLimit(value);
+    updateRemainingMinutes(accountRemainingMinutes(value));
     QString message;
     if (remember) TokenStore::save(token, message);
     emit account(true, m_Limit, message);
@@ -115,6 +123,7 @@ void ProviderWorker::acceptAccount(const QJsonObject& value, const QString& toke
 
 void ProviderWorker::signOut() {
     stop(); ++m_AuthGeneration; clearRequests(false); m_Token.clear(); m_Limit = 0;
+    updateRemainingMinutes(-1);
     QString error; TokenStore::clear(error); emit account(false, 0, error);
 }
 
@@ -125,6 +134,7 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
         emit ended("Choose supported stream settings within your account’s resolution limit."); return;
     }
     m_Active = true; ++m_Generation; m_Ready = false; m_Shutdown = false;
+    updateRemainingMinutes(-1);
     StreamBridge::setExpectedEnd(false);
     m_PinSubmitted = false;
     m_Polling = false; m_RequestPending = false; m_Namespace = false; m_Address.clear();
@@ -192,6 +202,9 @@ void ProviderWorker::receive(const QString& packet) {
     if (frame.name == "inactive" || frame.name == "reset" || frame.name == "gamequit") {
         if (m_Shutdown) { finish({}); return; }
         finish(frame.value == "videonotstarting" ? "The provider ended the session because video did not start. Check the dashboard, then retry." : "The provider ended the session. Check the dashboard for the VM state.");
+    } else if (frame.name == "control" && frame.value.isObject()) {
+        const auto value = frame.value.toObject();
+        if (value.contains("timeLeft")) updateRemainingMinutes(providerMinutes(value.value("timeLeft")));
     } else if (frame.name == "status") {
         const QString status = frame.value.isString() ? frame.value.toString() : frame.value.toObject().value("status").toString();
         if (status == "starting" || status == "waiting") emit stage("booting", "Waiting for the VM to boot. This can take a minute or two.");
@@ -266,6 +279,7 @@ void ProviderWorker::clearRequests(bool sessionOnly) {
 void ProviderWorker::finish(const QString& message) {
     if (!m_Active) return;
     m_Active = false; ++m_Generation;
+    updateRemainingMinutes(-1);
     StreamBridge::setHostRequestsAllowed(false);
     m_Poll->stop(); m_Startup->stop(); m_Heartbeat->stop();
     clearRequests(true); m_RequestPending = false; m_Polling = false; m_Namespace = false;

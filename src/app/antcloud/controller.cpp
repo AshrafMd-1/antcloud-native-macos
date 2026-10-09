@@ -23,6 +23,7 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
     }
     m_FpsIndex = qBound(0, settings.value("native/fpsIndex", 1).toInt(), 2);
     m_Bitrate = savedBitrate(settings.value("native/bitrate", 6000).toInt());
+    m_CodecIndex = savedCodecIndex(settings.value("native/codecIndex", 0).toInt());
     m_Fullscreen = settings.value("native/fullscreen", true).toBool();
     m_RelativeMouse = settings.value("native/relativeMouse", true).toBool();
     m_ShowStats = settings.value("native/showStats", true).toBool();
@@ -32,6 +33,9 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
     connect(m_Worker, &ProviderWorker::account, this, [this](bool signedIn, int limit, const QString& message) {
         m_SignedIn = signedIn; m_Limit = limit; m_Notice = message;
         setStage("idle", signedIn ? "Your Windows VM is ready to connect." : "Sign in to connect to your Windows VM.");
+    });
+    connect(m_Worker, &ProviderWorker::remainingMinutesChanged, this, [this](int minutes) {
+        m_RemainingMinutes = minutes; emit changed();
     });
     connect(m_Worker, &ProviderWorker::authenticationFailed, this, [this](const QString& message) {
         m_Error = message; setStage("idle", "Sign in to connect to your Windows VM.");
@@ -92,7 +96,7 @@ void Controller::start() {
     if (!m_SignedIn || busy() || !m_Window) return;
     m_Error.clear(); m_Notice.clear(); m_StreamWarning.clear(); m_ShutdownStatus.clear();
     StreamBridge::setExpectedEnd(false);
-    if (m_ResolutionIndex < 0 || m_ResolutionIndex > 3 || m_FpsIndex < 0 || m_FpsIndex > 2) { emit changed(); return; }
+    if (m_CodecIndex != savedCodecIndex(m_CodecIndex) || m_ResolutionIndex < 0 || m_ResolutionIndex > 3 || m_FpsIndex < 0 || m_FpsIndex > 2) { emit changed(); return; }
     const QSize size = resolutions[m_ResolutionIndex];
     StreamSettings spec{size.width(), size.height(), frameRates[m_FpsIndex], m_Bitrate};
     if (!spec.isValid() || spec.preset() > m_Limit) {
@@ -100,14 +104,17 @@ void Controller::start() {
     }
     QSettings settings;
     settings.setValue("native/resolutionIndex", m_ResolutionIndex); settings.setValue("native/fpsIndex", m_FpsIndex);
-    settings.setValue("native/bitrate", m_Bitrate); settings.setValue("native/fullscreen", m_Fullscreen);
+    settings.setValue("native/bitrate", m_Bitrate); settings.setValue("native/codecIndex", m_CodecIndex); settings.setValue("native/fullscreen", m_Fullscreen);
     settings.setValue("native/relativeMouse", m_RelativeMouse); settings.setValue("native/showStats", m_ShowStats);
     m_Preferences = StreamingPreferences::get();
     m_Preferences->width = spec.width; m_Preferences->height = spec.height; m_Preferences->fps = spec.fps;
     m_Preferences->bitrateKbps = spec.bitrate;
     m_Preferences->windowMode = m_Fullscreen ? StreamingPreferences::WM_FULLSCREEN_DESKTOP : StreamingPreferences::WM_WINDOWED;
     m_Preferences->absoluteMouseMode = !m_RelativeMouse; m_Preferences->captureSysKeysMode = StreamingPreferences::CSK_ALWAYS;
-    m_Preferences->videoCodecConfig = StreamingPreferences::VCC_FORCE_H264; m_Preferences->enableHdr = false;
+    const StreamingPreferences::VideoCodecConfig codecs[] = {
+        StreamingPreferences::VCC_FORCE_H264, StreamingPreferences::VCC_FORCE_HEVC, StreamingPreferences::VCC_FORCE_AV1
+    };
+    m_Preferences->videoCodecConfig = codecs[m_CodecIndex]; m_Preferences->enableHdr = false;
     m_Preferences->gameOptimizations = false; m_Preferences->quitAppAfter = false;
     m_Preferences->showPerformanceOverlay = m_ShowStats; m_Preferences->richPresence = false; m_Preferences->enableMdns = false;
     m_Active = true; m_ProviderActive = true; m_Computer = nullptr;
@@ -239,7 +246,7 @@ void Controller::setStage(const QString& phase, const QString& detail) {
 }
 void Controller::record(const QString& value) {
     // Fixed local messages only. No account responses, host addresses or decoder dumps.
-    m_Diagnostics.append(QString("%1s %2").arg(elapsed()).arg(value.left(512)));
+    m_Diagnostics.append(QString("%1s %2").arg(elapsed()).arg(value).left(512));
     while (m_Diagnostics.size() > 64) m_Diagnostics.removeFirst();
 }
 void Controller::clearDiagnostics() { m_Diagnostics.clear(); m_Notice = "Diagnostic history cleared."; emit changed(); }
