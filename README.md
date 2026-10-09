@@ -1,4 +1,4 @@
-# AntCloud Native 1.0.3
+# AntCloud Native 1.0.3 (ALPHA && UNOFFCIAL)
 
 One Mac app to sign in, start your Windows VM, stream games and disconnect or request shutdown. Terminal is only needed to build it. This is a personal client using Moonlight 6.2.0, not an official AntCloud app.
 
