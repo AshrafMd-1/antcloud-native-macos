@@ -1,3 +1,4 @@
+#include "antcloud/streambridge.h"
 #include "sdlvid.h"
 
 #include "streaming/session.h"
@@ -241,8 +242,9 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
             SDL_FreeSurface(newSurface);
 
             if (m_OverlayTextures[type]) {
-                // Overlays are always drawn at exact size
-                SDL_SetTextureScaleMode(m_OverlayTextures[type], SDL_ScaleModeNearest);
+                // Native statistics may shrink to fit a narrow viewport.
+                SDL_SetTextureScaleMode(m_OverlayTextures[type],
+                    type == Overlay::OverlayDebug && AntCloud::StreamBridge::enabled() ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
             }
         }
 
@@ -250,9 +252,13 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
         if (m_OverlayTextures[type] != nullptr) {
             SDL_Rect viewportRect;
             SDL_RenderGetViewport(m_Renderer, &viewportRect);
-            m_OverlayRects[type] = Overlay::OverlayManager::overlayRect(type, viewportRect.w, viewportRect.h,
-                                                                      m_OverlayRects[type].w, m_OverlayRects[type].h);
-            SDL_RenderCopy(m_Renderer, m_OverlayTextures[type], nullptr, &m_OverlayRects[type]);
+            const bool nativeStats = type == Overlay::OverlayDebug && AntCloud::StreamBridge::enabled();
+            const bool hintVisible = Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayControlsHint);
+            const int statsWidth = nativeStats && hintVisible ?
+                SDL_max(1, viewportRect.w - m_OverlayRects[Overlay::OverlayControlsHint].w - 8) : viewportRect.w;
+            SDL_Rect destination = Overlay::OverlayManager::overlayRect(type, statsWidth, viewportRect.h,
+                m_OverlayRects[type].w, m_OverlayRects[type].h, false, nativeStats);
+            SDL_RenderCopy(m_Renderer, m_OverlayTextures[type], nullptr, &destination);
         }
     }
 }

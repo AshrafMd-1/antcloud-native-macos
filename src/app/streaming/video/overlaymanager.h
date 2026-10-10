@@ -43,12 +43,7 @@ public:
 
     // Renderers with a lower-left origin invert only the vertical placement.
     static SDL_Rect overlayRect(OverlayType type, int viewportWidth, int viewportHeight,
-                                int textWidth, int textHeight, bool bottomOrigin = false) {
-        int x = type == OverlayControlsHint ? SDL_max(0, viewportWidth - textWidth) : 0;
-        int top = type == OverlayStatusUpdate ? SDL_max(0, viewportHeight - textHeight) : 0;
-        int y = bottomOrigin ? SDL_max(0, viewportHeight - textHeight) - top : top;
-        return {x, y, textWidth, textHeight};
-    }
+                                int textWidth, int textHeight, bool bottomOrigin = false, bool fitStats = false);
 
 private:
     void notifyOverlayUpdated(OverlayType type);

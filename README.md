@@ -2,7 +2,7 @@
 
 AntCloud Native is an unofficial macOS client for AntCloud Windows VMs. It combines AntCloud account access and VM startup with Moonlight's native video, audio and input engine in one app.
 
-Version **2.0.0** · [Repository](https://github.com/AshrafMd-1/antcloud-native-macos) · [Releases](https://github.com/AshrafMd-1/antcloud-native-macos/releases)
+Version **2.0.1** · [Repository](https://github.com/AshrafMd-1/antcloud-native-macos) · [Releases](https://github.com/AshrafMd-1/antcloud-native-macos/releases)
 
 The app targets Apple Silicon and macOS 26 or newer. It is a personal project and is not affiliated with or endorsed by AntCloud or Moonlight.
 
@@ -28,7 +28,7 @@ The app targets Apple Silicon and macOS 26 or newer. It is a personal project an
 
 ## Install and connect
 
-Download `AntCloudNative-2.0.0-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases), extract it and move `AntCloudNative.app` to Applications. The distributed app is locally signed and is not notarized. See [build.md](build.md) for installation details and source-build instructions.
+Download `AntCloudNative-2.0.1-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases), extract it and move `AntCloudNative.app` to Applications. The distributed app is locally signed and is not notarized. See [build.md](build.md) for installation details and source-build instructions.
 
 Open the app, sign in, choose the stream settings allowed by your account and select **Connect**. The app opens an AntCloud provider session, starts the VM when needed, discovers its native streaming host, pairs this Mac and launches the Windows desktop.
 
@@ -62,6 +62,14 @@ Frame rate choices are **30, 60 and 120 FPS**. Bitrate choices are **2, 3, 4, 6,
 Codec choices are **H.264**, **H.265 - if supported** and **AV1 - if supported**. H.265 and AV1 require compatible host encoding and Mac decoding. The Moonlight engine negotiates a usable format or reports a failure; selecting a codec does not add that capability to the VM. HDR is disabled.
 
 Settings are saved as soon as the app accepts a change. They apply to the next connection. Changes made in a stream with the fullscreen, mouse-mode, statistics, controls-hint and microphone shortcuts are also saved, so the next stream starts with the resulting state.
+
+### Windows virtual-display modes
+
+The repository includes a [VDD settings reference](config/vdd_settings.xml) with the same 16:9 and 16:10 modes offered by the app. This is a host-side reference file: AntCloud Native does not install, upload or modify it.
+
+On the tested AntCloud VM, the virtual display driver reads its XML configuration when the VM starts. AntCloud can rewrite that file to its default configuration after the driver has already loaded, so replacing the XML does not change the running display immediately. The custom modes become available the next time the virtual display is initialized, and the file may need to be restored before a later VM start if AntCloud reset it. This is observed behavior on the tested VM, not a guaranteed provider contract.
+
+For the clearest result, select the same dimensions in AntCloud Native and Windows Display settings. Editing a VM driver configuration is an advanced host-side action; keep a backup and use only modes the VM and account support.
 
 ## Keyboard mapping
 
@@ -114,7 +122,7 @@ Microphone audio on this channel is **unencrypted**. Enable it only on a trusted
 
 ## Statistics and time remaining
 
-The stream overlay contains one line:
+The stream overlay keeps all statistics and provider time on one line, fitting the text to the available width instead of wrapping:
 
 - **RTT** — control round-trip time to the streaming host, not total input latency.
 - **Loss** — missing video frames, not raw network packet loss.
@@ -134,6 +142,6 @@ The app keeps a bounded history of fixed, redacted status messages in memory. **
 
 ## Source and license
 
-[AGENTS.md](AGENTS.md) describes the architecture and maintenance contracts. [build.md](build.md) covers installation, building, testing and package checks. `source-provenance.json` records the exact Moonlight and dependency revisions, while `source-manifest.json` records release-source hashes.
+[AGENTS.md](AGENTS.md) describes the architecture and maintenance contracts. [build.md](build.md) covers installation, building, testing and package checks. The [VDD settings reference](config/vdd_settings.xml) lists matching host display modes. `source-provenance.json` records the exact Moonlight and dependency revisions, while `source-manifest.json` records release-source hashes.
 
 AntCloud Native is based on Moonlight 6.2.0. The complete modified engine and pinned public dependency source are included under `src/`. Moonlight's GPL-3.0 license, copyright notices and dependency licenses remain in place; see [LICENSE](LICENSE), [src/LICENSE](src/LICENSE) and the notices distributed with the source. AntCloud-specific additions are GPL-3.0-or-later.

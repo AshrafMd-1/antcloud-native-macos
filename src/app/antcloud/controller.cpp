@@ -66,7 +66,7 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
     });
     connect(m_Worker, &ProviderWorker::notice, this, [this](const QString& message) { m_Notice = message; record(message); emit changed(); });
     connect(m_Worker, &ProviderWorker::shutdownRequested, this, [this] {
-        m_ShutdownStatus = "Shutdown requested. Check the AntCloud dashboard for the final VM power state.";
+        m_ShutdownStatus = "Shutdown requested.";
         record("Shutdown request sent once; final power state unverified.");
         setStage("shuttingDown", "Disconnecting after the shutdown request…");
     });

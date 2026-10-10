@@ -1,4 +1,5 @@
 #include "plvk.h"
+#include "antcloud/streambridge.h"
 
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
@@ -1028,12 +1029,20 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
         if (m_Overlays[i].hasOverlay) {
             // Position the overlay
             overlayParts[i].src = { 0, 0, (float)m_Overlays[i].overlay.tex->params.w, (float)m_Overlays[i].overlay.tex->params.h };
+            const bool nativeStats = i == Overlay::OverlayDebug && AntCloud::StreamBridge::enabled();
+            const auto& hint = m_Overlays[Overlay::OverlayControlsHint];
+            int hintWidth = 0;
+            if (nativeStats && Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayControlsHint)) {
+                if (hint.hasStagingOverlay) hintWidth = hint.stagingOverlay.tex->params.w;
+                else if (hint.hasOverlay) hintWidth = hint.overlay.tex->params.w;
+            }
+            const int availableWidth = hintWidth > 0 ? SDL_max(1, static_cast<int>(targetFrame.crop.x1) - hintWidth - 8) : targetFrame.crop.x1;
             SDL_Rect position = Overlay::OverlayManager::overlayRect(static_cast<Overlay::OverlayType>(i),
-                targetFrame.crop.x1, targetFrame.crop.y1, overlayParts[i].src.x1, overlayParts[i].src.y1);
+                availableWidth, targetFrame.crop.y1, overlayParts[i].src.x1, overlayParts[i].src.y1, false, nativeStats);
             overlayParts[i].dst.x0 = position.x;
             overlayParts[i].dst.y0 = position.y;
-            overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
-            overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
+            overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + position.w;
+            overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + position.h;
 
             m_Overlays[i].overlay.parts = &overlayParts[i];
             m_Overlays[i].overlay.num_parts = 1;

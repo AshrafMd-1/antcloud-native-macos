@@ -166,7 +166,7 @@ void OverlayManager::notifyOverlayUpdated(OverlayType type)
                                       m_Overlays[type].color,
                                       {0, 0, 0, 255},
                                       4,
-                                      1024)
+                                      type == OverlayDebug && AntCloud::StreamBridge::enabled() ? 0 : 1024)
             : nullptr);
 
     // Notify the renderer
@@ -185,6 +185,18 @@ SDL_Surface* OverlayManager::RenderTextOutlinedWrapped(TTF_Font* font, const cha
 
     int oldOutline = TTF_GetFontOutline(font);
     TTF_SetFontOutline(font, outlineWidth);
+
+    // Native stats use one line. Keep power-of-two wrap bounds for renderer
+    // compatibility, but measure the outlined text instead of imposing 1024px.
+    if (wrapWidth == 0) {
+        int width, height;
+        if (TTF_SizeUTF8(font, text, &width, &height) != 0) {
+            TTF_SetFontOutline(font, oldOutline);
+            return nullptr;
+        }
+        wrapWidth = 1024;
+        while (wrapWidth < width) wrapWidth *= 2;
+    }
 
     // Verify that the string won't require wrapping (which could cause the outline and the text
     // to diverge due to different wrapping positions).
@@ -218,4 +230,21 @@ SDL_Surface* OverlayManager::RenderTextOutlinedWrapped(TTF_Font* font, const cha
 
     SDL_FreeSurface(textSurface);
     return outlineSurface;
+}
+
+SDL_Rect OverlayManager::overlayRect(OverlayType type, int viewportWidth, int viewportHeight,
+                                     int textWidth, int textHeight, bool bottomOrigin, bool fitStats)
+{
+    // Reserve enough room for large RTT/quota values so ordinary statistics
+    // updates do not change the scale in narrow windows.
+    constexpr int NativeStatsWidthBudget = 1536;
+    const int statsWidth = SDL_max(NativeStatsWidthBudget, textWidth);
+    if (type == OverlayDebug && fitStats && viewportWidth > 0 && statsWidth > viewportWidth) {
+        textHeight = SDL_max(1, static_cast<int>(static_cast<int64_t>(textHeight) * viewportWidth / statsWidth));
+        textWidth = static_cast<int>(static_cast<int64_t>(textWidth) * viewportWidth / statsWidth);
+    }
+    int x = type == OverlayControlsHint ? SDL_max(0, viewportWidth - textWidth) : 0;
+    int top = type == OverlayStatusUpdate ? SDL_max(0, viewportHeight - textHeight) : 0;
+    int y = bottomOrigin ? SDL_max(0, viewportHeight - textHeight) - top : top;
+    return {x, y, textWidth, textHeight};
 }

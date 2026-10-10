@@ -9,7 +9,9 @@ unix:!macx {
 }
 macx {
     INCLUDEPATH += $$PWD/../../libs/mac/include $$PWD/../../libs/mac/include/SDL2
-    LIBS += -L$$PWD/../../libs/mac/lib -lSDL2 -lSDL2_ttf
+    SOURCES += appkit_stats_test.mm
+    HEADERS += appkit_stats_test.h ../../app/streaming/video/ffmpeg-renderers/antcloudstatstextfield.h
+    LIBS += -L$$PWD/../../libs/mac/lib -lSDL2 -lSDL2_ttf -framework AppKit
 }
 
 macx {

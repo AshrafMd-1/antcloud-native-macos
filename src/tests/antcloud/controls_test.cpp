@@ -1,5 +1,10 @@
 #include "antcloudcontrols.h"
 #include "streaming/video/overlaymanager.h"
+#include "streaming/video/antcloudstats.h"
+#include <limits>
+#ifdef Q_OS_MACOS
+#include "appkit_stats_test.h"
+#endif
 #include <QtTest>
 #include <QFile>
 #include <QFileInfo>
@@ -107,6 +112,88 @@ private slots:
         { OverlayManager disabled; QVERIFY(!disabled.isOverlayEnabled(OverlayControlsHint)); }
         Bridge::install(nullptr); Bridge::setControlsHint(true);
         { OverlayManager retainedCli; QVERIFY(!retainedCli.isOverlayEnabled(OverlayControlsHint)); }
+        SDL_Quit();
+    }
+#ifdef Q_OS_MACOS
+    void appKitStatsStayOnOneLine() {
+        QString failure;
+        QVERIFY2(runAppKitStatsTextFieldFixture(&failure), qPrintable(failure));
+    }
+#endif
+    void statsStayOnOneLine() {
+        using namespace Overlay;
+        using Bridge = AntCloud::StreamBridge;
+        QVERIFY(SDL_Init(SDL_INIT_VIDEO) == 0);
+        Receiver receiver; Bridge::install(&receiver);
+        {
+            OverlayManager manager;
+            OverlayReceiver renderer;
+            manager.setOverlayRenderer(&renderer);
+            manager.setOverlayState(OverlayDebug, true);
+            int lineHeight = 0;
+            int fittedHeight = 0;
+            for (int minutes : {0, 7212, -1, std::numeric_limits<int>::max()}) {
+                char text[200];
+                AntCloudStats::format({std::numeric_limits<uint32_t>::max(), 120, 120, 120, 50, minutes}, text, sizeof(text));
+                manager.updateOverlayText(OverlayDebug, text);
+                auto surface = manager.getUpdatedOverlaySurface(OverlayDebug); QVERIFY(surface);
+                if (lineHeight == 0) lineHeight = surface->h;
+                QCOMPARE(surface->h, lineHeight);
+                QVERIFY(surface->w > 0); QVERIFY(surface->w <= 1536);
+                const auto narrow = OverlayManager::overlayRect(OverlayDebug, 960, 600, surface->w, surface->h, false, true);
+                if (fittedHeight == 0) fittedHeight = narrow.h;
+                QCOMPARE(narrow.h, fittedHeight);
+                for (int viewport : {600, 960, 1280, 1920}) {
+                    const auto rect = OverlayManager::overlayRect(OverlayDebug, viewport, 600, surface->w, surface->h, false, true);
+                    QVERIFY(rect.w <= viewport); QVERIFY(rect.h > 0);
+                    QCOMPARE(rect.x, 0); QCOMPARE(rect.y, 0);
+                    const auto inverted = OverlayManager::overlayRect(OverlayDebug, viewport, 600, surface->w, surface->h, true, true);
+                    QCOMPARE(inverted.y + inverted.h, 600);
+                }
+                manager.setControlsHint(true);
+                manager.setOverlayTextUpdated(OverlayControlsHint);
+                auto hint = manager.getUpdatedOverlaySurface(OverlayControlsHint); QVERIFY(hint);
+                const auto hintRect = OverlayManager::overlayRect(OverlayControlsHint, 960, 600, hint->w, hint->h);
+                const auto besideHint = OverlayManager::overlayRect(OverlayDebug, 960 - hint->w - 8, 600,
+                    surface->w, surface->h, false, true);
+                QVERIFY(besideHint.x + besideHint.w + 8 <= hintRect.x);
+                const auto captureDir = qEnvironmentVariable("ANTCLOUD_SCREENSHOT_DIR");
+                if (minutes == 7212 && !captureDir.isEmpty()) {
+                    QVERIFY(QDir().mkpath(captureDir));
+                    auto canvas = SDL_CreateRGBSurfaceWithFormat(0, 960, 600, 32, SDL_PIXELFORMAT_ARGB8888); QVERIFY(canvas);
+                    SDL_FillRect(canvas, nullptr, SDL_MapRGB(canvas->format, 24, 28, 36));
+                    auto rect = besideHint;
+                    QCOMPARE(SDL_BlitScaled(surface, nullptr, canvas, &rect), 0);
+                    auto hintPosition = hintRect;
+                    QCOMPARE(SDL_BlitSurface(hint, nullptr, canvas, &hintPosition), 0);
+                    QCOMPARE(SDL_SaveBMP(canvas, QFile::encodeName(QDir(captureDir).filePath("stream-stats-960.bmp"))), 0);
+                    SDL_FreeSurface(canvas);
+                }
+                SDL_FreeSurface(hint);
+                SDL_FreeSurface(surface);
+            }
+            manager.updateOverlayText(OverlayDebug, "RTT 32 ms");
+            auto shortLine = manager.getUpdatedOverlaySurface(OverlayDebug); QVERIFY(shortLine);
+            QVERIFY(lineHeight <= shortLine->h + 1);
+            const auto wide = OverlayManager::overlayRect(OverlayDebug, 1920, 1080, shortLine->w, shortLine->h, false, true);
+            QCOMPARE(wide.w, shortLine->w); QCOMPARE(wide.h, shortLine->h);
+            const auto legacy = OverlayManager::overlayRect(OverlayDebug, 960, 600, 1400, 60);
+            QCOMPARE(legacy.w, 1400); QCOMPARE(legacy.h, 60);
+            SDL_FreeSurface(shortLine);
+        }
+        Bridge::install(nullptr);
+        {
+            OverlayManager legacy;
+            OverlayReceiver renderer;
+            legacy.setOverlayRenderer(&renderer);
+            legacy.setOverlayState(OverlayDebug, true);
+            legacy.updateOverlayText(OverlayDebug, "First line");
+            auto single = legacy.getUpdatedOverlaySurface(OverlayDebug); QVERIFY(single);
+            const int height = single->h; SDL_FreeSurface(single);
+            legacy.updateOverlayText(OverlayDebug, "First line\nSecond line");
+            auto multiple = legacy.getUpdatedOverlaySurface(OverlayDebug); QVERIFY(multiple);
+            QVERIFY(multiple->h > height); SDL_FreeSurface(multiple);
+        }
         SDL_Quit();
     }
     void microphoneMuteAndSessionGuards() {

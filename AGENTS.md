@@ -2,7 +2,7 @@
 
 ## Project contract
 
-AntCloud Native is an unofficial native macOS client for AntCloud Windows VMs. It uses Qt for account and settings UI, a dedicated provider worker for AntCloud networking, and the Moonlight 6.2.0 SDL engine for streaming. The production version is **2.0.0**.
+AntCloud Native is an unofficial native macOS client for AntCloud Windows VMs. It uses Qt for account and settings UI, a dedicated provider worker for AntCloud networking, and the Moonlight 6.2.0 SDL engine for streaming. The production version is **2.0.1**.
 
 Read [README.md](README.md), [build.md](build.md) and `source-provenance.json` before changing behavior. Then inspect the relevant source and tests.
 
@@ -134,6 +134,20 @@ Codec indices 0/1/2 mean H.264/H.265/AV1. UI labels are **H.264**, **H.265 - if 
 
 The engine's 4K-to-1080 fallback applies only to legacy NVIDIA hosts. Preserve exact non-NVIDIA requests and the fixed safe advisory for an actual fallback.
 
+### VDD reference and observed startup behavior
+
+`config/vdd_settings.xml` is the host-side VDD reference supplied for matching the app's 16:9 and 16:10 choices. Preserve its UTF-8 BOM, CRLF line endings, resolution list and refresh-rate configuration unless a deliberate host-side compatibility change requires an update. The Mac app does not install, upload, locate or modify this file, and repository code must not assume a Windows installation path.
+
+The following sequence is user-observed on the tested AntCloud VM and is not a general provider contract:
+
+1. The virtual display driver reads its XML configuration during VM/display initialization.
+2. AntCloud can rewrite the XML to its default configuration after the driver has loaded it.
+3. Replacing the XML during a running initialization does not immediately change the active modes.
+4. The replacement modes appear when the virtual display next initializes from that file.
+5. A provider rewrite can require restoring the custom XML before a later startup.
+
+Keep public guidance conditional and distinguish the requested stream dimensions from the active Windows desktop mode. Do not claim that account allowance, this reference file or a successful stream proves a mode is supported by the VM driver or encoder.
+
 ## Keyboard and local controls
 
 Modifier rows are Command, Option and Control. Targets are None, Ctrl, Alt and Windows key at indices 0/1/2/3. Assigning an occupied non-None target clears the other row; duplicate None values are allowed. Invalid stored targets become None and malformed duplicates keep the earlier row.
@@ -160,7 +174,9 @@ Show the short trusted-network notice only while microphone sending is enabled. 
 
 ## Statistics and provider time
 
-The native overlay has one line with RTT, loss, FPS, Mbps and provider time. It does not show stream dimensions. Time uses bounded hours/minutes formatting such as `120h 10m`; unknown is `unavailable`.
+The native overlay keeps RTT, loss, FPS, Mbps and provider time on one line. It does not show stream dimensions. Time uses bounded hours/minutes formatting such as `120h 10m`; unknown is `unavailable`.
+
+Measure the complete line with the active native TTF before drawing. The stable layout budget is 1536 pixels; when the available width is narrower than that budget or the measured line, scale the complete line down to fit instead of wrapping, clipping or moving time to another line. Apply the fitted destination dimensions in the preferred libplacebo renderer and the Metal/SDL fallbacks. Preserve the AppKit font fallback, the retained CLI rendering path and the separate top-right controls-hint space. Keep the frame loop free of unchanged/off overlay work.
 
 - RTT is control round-trip time.
 - Loss is missing video frames.
@@ -231,16 +247,16 @@ Create versioned source and Mac app ZIPs in `dist/`. Verify:
 - minimum macOS target;
 - QML modules and microphone usage description;
 - deep strict signature verification on the extracted app; and
-- only the 2.0.0 app and release artifacts remain in `dist/`.
+- only the 2.0.1 app and release artifacts remain in `dist/`.
 
 Local packages are ad-hoc signed. Developer ID signing, notarization and publication are separate operations and require separate evidence.
 
 ## Verified release behavior
 
-The 2.0.0 Mac fixture suite passed six SDK checks, standalone protocol/input/statistics assertions, and 137 Qt test rows: provider 47, controls 7, seeker 18, bandwidth 5, microphone 14, production Controller settings 5 and UI 41. The real Controller fixture verifies immediate saves, reloads, shortcut delivery after Stop, stale generations and microphone preference notification after a local failure. The queued host-monitor regression also passed 50 isolated repetitions after deterministic fixture setup.
+The 2.0.1 Mac fixture suite passes six SDK checks, standalone protocol/input/statistics assertions, and 139 Qt test rows: provider 47, controls 9, seeker 18, bandwidth 5, microphone 14, production Controller settings 5 and UI 41. The controls fixtures cover the measured one-line statistics layout at the stable budget and narrower viewport sizes. The real Controller fixture covers immediate saves, reloads, shortcut delivery after Stop, stale generations and microphone preference notification after a local failure.
 
-QML lint, shell/Python syntax, documentation targets and whitespace checks passed. Actual fixture screenshots cover Video/Keyboard defaults, supported-codec labels, compact/wide light/dark states, enabled-only microphone notices, scrollable help and the SDL controls panel/hint. Independent correctness/security and architecture reviews found no unresolved blockers.
+QML lint, shell/Python syntax, local documentation links and whitespace checks pass. Actual fixture screenshots verify single-line statistics beside the controls hint and the exact “Shutdown requested.” result. Independent correctness/security and architecture reviews report no unresolved blockers.
 
-The full Apple Silicon build passed deployment, CLI help/version, both bundle version fields, the microphone usage description and strict deep ad-hoc signature verification. It targets macOS 26.0 with Qt 6.11.2. The installed macOS 27 SDK produces Qt's compatibility warning; these build checks do not prove performance or compatibility on other hardware or targets.
+The full Apple Silicon build passes deployment, executable and bundle version checks, the microphone usage description and strict deep ad-hoc signature verification. The preferred libplacebo renderer and Metal, SDL and AppKit fallbacks compile in the Mac build. The package targets macOS 26.0 with Qt 6.11.2. The macOS 27 SDK produces Qt’s compatibility warning; these checks do not prove runtime performance on other hardware or targets.
 
 These fixtures isolate accounts, Keychain and microphone devices. Live provider renewal, VM power, display/codec availability, actual Mac permission/devices and hardware performance require target-Mac verification; a passing fixture does not establish them.

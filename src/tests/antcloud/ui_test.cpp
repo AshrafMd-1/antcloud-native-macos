@@ -366,7 +366,7 @@ private slots:
     }
     void retiredResolutionAndPowerStatus() {
         controller.signedIn=true; controller.detail="Disconnected.";
-        controller.shutdownStatus="Shutdown requested. Check the dashboard for the final power state.";
+        controller.shutdownStatus="Shutdown requested.";
         emit controller.changed();
         auto picker=window->findChild<QObject*>("resolutionPicker"); QVERIFY(picker);
         const QStringList labels={"1280 × 720, 16:9", "1920 × 1080, 16:9", "2560 × 1440, 16:9", "3840 × 2160, 16:9", "2560 × 1600, 16:10", "2048 × 1280, 16:10", "1920 × 1200, 16:10", "1680 × 1050, 16:10", "1440 × 900, 16:10", "1280 × 800, 16:10", "1024 × 640, 16:10", "960 × 600, 16:10"};
@@ -378,6 +378,8 @@ private slots:
         }
         auto power=window->findChild<QQuickItem*>("powerStatusSection"); QVERIFY(power);
         QTRY_VERIFY(power->isVisible());
+        auto status=window->findChild<QObject*>("powerStatus"); QVERIFY(status);
+        QCOMPARE(status->property("text").toString(),QString("Shutdown requested."));
         auto error=window->findChild<QQuickItem*>("errorMessage"); QVERIFY(error);
         QVERIFY(!error->isVisible());
         controller.shutdownStatus.clear(); controller.error="Fixture connection failure"; emit controller.changed();
@@ -452,7 +454,7 @@ private slots:
             window->findChild<QObject*>("settingsTabs")->setProperty("currentIndex",1);
         }
         if(state=="booting") controller.start();
-        if(state=="shutdown") { controller.detail="Disconnected."; controller.shutdownStatus="Shutdown requested. Check the AntCloud dashboard for the final VM power state."; }
+        if(state=="shutdown") { controller.detail="Disconnected."; controller.shutdownStatus="Shutdown requested."; }
         if(state=="error") { controller.detail="Disconnected. You can try connecting again."; controller.error="The provider ended the session because video did not start. Check the dashboard, then retry."; }
         emit controller.changed(); QTest::qWait(200);
         if(state.startsWith("controls")) {

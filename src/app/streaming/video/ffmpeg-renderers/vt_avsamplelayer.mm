@@ -3,6 +3,8 @@
 #define AVMediaType AVMediaType_FFmpeg
 #include "vt.h"
 #include "pacer/pacer.h"
+#include "antcloudstatstextfield.h"
+#include "antcloud/streambridge.h"
 #undef AVMediaType
 
 #include <SDL_syswm.h>
@@ -38,6 +40,7 @@ public:
           m_DisplayLayer(nullptr),
           m_FormatDesc(nullptr),
           m_StreamView(nullptr),
+          m_NativeStatsRightConstraint(nullptr),
           m_DisplayLink(nullptr),
           m_LastColorSpace(-1),
           m_ColorSpace(nullptr),
@@ -351,6 +354,7 @@ public:
             // We need to add a subview for our display layer.
             NSView* contentView = info.info.cocoa.window.contentView;
             m_StreamView = [[VTView alloc] initWithFrame:contentView.bounds];
+            [m_StreamView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
             m_DisplayLayer = [[AVSampleBufferDisplayLayer alloc] init];
             m_DisplayLayer.bounds = m_StreamView.bounds;
@@ -403,13 +407,25 @@ public:
     { @autoreleasepool {
         // Lazy initialization for the overlay
         if (m_OverlayTextFields[type] == nullptr) {
-            m_OverlayTextFields[type] = [[NSTextField alloc] initWithFrame:m_StreamView.bounds];
+            const bool nativeStats = type == Overlay::OverlayDebug && AntCloud::StreamBridge::enabled();
+            if (nativeStats) {
+                m_OverlayTextFields[type] = [[AntCloudStatsTextField alloc] initWithFrame:m_StreamView.bounds];
+            }
+            else {
+                m_OverlayTextFields[type] = [[NSTextField alloc] initWithFrame:m_StreamView.bounds];
+            }
             [m_OverlayTextFields[type] setBezeled:NO];
             [m_OverlayTextFields[type] setDrawsBackground:NO];
             [m_OverlayTextFields[type] setEditable:NO];
             [m_OverlayTextFields[type] setSelectable:NO];
-            if (type == Overlay::OverlayControlsHint) {
+            if (nativeStats || type == Overlay::OverlayControlsHint) {
                 [m_OverlayTextFields[type] setTranslatesAutoresizingMaskIntoConstraints:NO];
+            }
+            if (nativeStats) {
+                [(AntCloudStatsTextField*)m_OverlayTextFields[type]
+                    configureWithFontSize:Session::get()->getOverlayManager().getOverlayFontSize(type)];
+            }
+            else if (type == Overlay::OverlayControlsHint) {
                 [[m_OverlayTextFields[type] cell] setUsesSingleLineMode:YES];
             }
 
@@ -430,7 +446,23 @@ public:
             [m_OverlayTextFields[type] setFont:[NSFont messageFontOfSize:Session::get()->getOverlayManager().getOverlayFontSize(type)]];
 
             [m_StreamView addSubview: m_OverlayTextFields[type]];
-            if (type == Overlay::OverlayControlsHint) {
+            if (nativeStats) {
+                NSTextField* stats = m_OverlayTextFields[type];
+                NSFont* preferredStatsFont = [NSFont messageFontOfSize:
+                    Session::get()->getOverlayManager().getOverlayFontSize(type)];
+                const CGFloat statsHeight = std::ceil(preferredStatsFont.ascender -
+                    preferredStatsFont.descender + preferredStatsFont.leading) + 4.0;
+                [stats setStringValue:[NSString stringWithUTF8String:Session::get()->getOverlayManager().getOverlayText(type)]];
+                m_NativeStatsRightConstraint =
+                    [stats.rightAnchor constraintEqualToAnchor:m_StreamView.rightAnchor];
+                [NSLayoutConstraint activateConstraints:@[
+                    [stats.topAnchor constraintEqualToAnchor:m_StreamView.topAnchor],
+                    [stats.leftAnchor constraintEqualToAnchor:m_StreamView.leftAnchor],
+                    m_NativeStatsRightConstraint,
+                    [stats.heightAnchor constraintEqualToConstant:statsHeight]
+                ]];
+            }
+            else if (type == Overlay::OverlayControlsHint) {
                 NSTextField* hint = m_OverlayTextFields[type];
                 [hint setStringValue:[NSString stringWithUTF8String:Session::get()->getOverlayManager().getOverlayText(type)]];
                 // AppKit's top/right anchors remain correct in either view coordinate orientation.
@@ -441,6 +473,23 @@ public:
                     [hint.heightAnchor constraintEqualToConstant:hint.intrinsicContentSize.height]
                 ]];
             }
+        }
+
+        // The hint shares the top edge with native statistics. Reserve its
+        // measured width only while visible; updating either overlay refreshes
+        // the constraint without adding work to the frame-rendering path.
+        if (m_NativeStatsRightConstraint != nullptr &&
+            (type == Overlay::OverlayDebug || type == Overlay::OverlayControlsHint)) {
+            CGFloat hintWidth = 0;
+            auto& overlays = Session::get()->getOverlayManager();
+            if (overlays.isOverlayEnabled(Overlay::OverlayControlsHint)) {
+                NSString* hintText = [NSString stringWithUTF8String:
+                    overlays.getOverlayText(Overlay::OverlayControlsHint)];
+                NSFont* hintFont = [NSFont messageFontOfSize:
+                    overlays.getOverlayFontSize(Overlay::OverlayControlsHint)];
+                hintWidth = [hintText sizeWithAttributes:@{NSFontAttributeName: hintFont}].width + 8.0;
+            }
+            m_NativeStatsRightConstraint.constant = -hintWidth;
         }
 
         // Update text contents
@@ -500,6 +549,7 @@ private:
     AVSampleBufferDisplayLayer* m_DisplayLayer;
     CMVideoFormatDescriptionRef m_FormatDesc;
     NSView* m_StreamView;
+    NSLayoutConstraint* m_NativeStatsRightConstraint;
     dispatch_block_t m_OverlayUpdateBlocks[Overlay::OverlayMax];
     NSTextField* m_OverlayTextFields[Overlay::OverlayMax];
     CVDisplayLinkRef m_DisplayLink;

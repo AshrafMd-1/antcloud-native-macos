@@ -1,3 +1,4 @@
+#include "antcloud/streambridge.h"
 // Nasty hack to avoid conflict between AVFoundation and
 // libavutil both defining AVMediaType
 #define AVMediaType AVMediaType_FFmpeg
@@ -524,11 +525,15 @@ public:
             // Try to acquire a reference on the overlay texture
             SDL_AtomicLock(&m_OverlayLock);
             overlayTexture = [m_OverlayTextures[i] retain];
+            const bool nativeStats = i == Overlay::OverlayDebug && AntCloud::StreamBridge::enabled();
+            const int hintWidth = nativeStats && Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayControlsHint) ?
+                m_OverlayTextures[Overlay::OverlayControlsHint].width : 0;
             SDL_AtomicUnlock(&m_OverlayLock);
 
             if (overlayTexture) {
+                const int availableWidth = hintWidth > 0 ? SDL_max(1, m_LastDrawableWidth - hintWidth - 8) : m_LastDrawableWidth;
                 SDL_Rect position = Overlay::OverlayManager::overlayRect(static_cast<Overlay::OverlayType>(i),
-                    m_LastDrawableWidth, m_LastDrawableHeight, overlayTexture.width, overlayTexture.height, true);
+                    availableWidth, m_LastDrawableHeight, overlayTexture.width, overlayTexture.height, true, nativeStats);
                 SDL_FRect renderRect = {(float)position.x, (float)position.y, (float)position.w, (float)position.h};
 
                 // Convert screen space to normalized device coordinates
