@@ -1,166 +1,246 @@
 # AntCloud Native development guide
 
-## Purpose and documentation
+## Project contract
 
-AntCloud Native is a personal macOS client for AntCloud Windows VMs, built on Moonlight 6.2.0. The main project release is **1.0.8**.
+AntCloud Native is an unofficial native macOS client for AntCloud Windows VMs. It uses Qt for account and settings UI, a dedicated provider worker for AntCloud networking, and the Moonlight 6.2.0 SDL engine for streaming. The production version is **2.0.0**.
 
-Read [README.md](README.md), [setup.md](setup.md) and `source-provenance.json`, then inspect the relevant source before changing behavior. README owns the project and usage reference; setup owns installation/build steps; this guide owns architecture, maintenance, verification and packaging. Keep these three guides current without release histories, personal session narratives, duplicate documents or archived patches.
+Read [README.md](README.md), [build.md](build.md) and `source-provenance.json` before changing behavior. Then inspect the relevant source and tests.
 
-## Working approach
+- `README.md` owns the public project, usage, settings and controls reference.
+- `build.md` owns installation, source build and verification commands.
+- `AGENTS.md` owns architecture, invariants, maintenance and packaging.
 
-- Complete clear, reversible local work through verification. Ask only for material ambiguity, destructive actions outside the requested scope or missing authority.
-- Use native subagents for bounded independent work when useful. Assign ownership and preserve other agents' edits; the leader integrates and verifies.
-- Keep diffs small. Write a cleanup plan before editing; add meaningful regression coverage when affected behavior lacks it. Prefer existing patterns and deletion over new layers. Add dependencies only when requested.
-- Explain non-obvious constraints in comments. Avoid obvious narration, release instructions and speculative performance claims.
-- Preserve GPL-3.0, copyright, upstream documentation and dependency notices. Do not remove reachable engine/CLI/platform paths without their callers and evidence.
-- Keep account credentials, PINs, host addresses, raw provider/socket traffic and private captures out of source, diagnostics and packages.
+Keep these guides about the current product. Use Git history for old releases and discarded behavior. Preserve upstream licenses, notices and vendored documentation.
 
-## Architecture and source map
+## Working rules
 
-The app has three cooperating parts: Qt for account/settings state, a provider worker on a dedicated QThread, and the existing Moonlight SDL streaming engine. Provider HTTP/WebSocket objects and timers belong on the provider worker; keep retained host network tasks off the streaming GUI loop. Reusing the engine preserves its decoder, audio and platform compatibility paths.
+- Complete clear local work through verification. Keep unrelated user changes intact.
+- Use native subagents for bounded independent work when useful. Assign file ownership, preserve other agents' edits, and own integration and final verification.
+- Write a bounded plan before cleanup or refactoring. Add meaningful regression coverage before changing behavior that lacks it.
+- Prefer deletion and existing patterns over new layers or dependencies.
+- Keep provider I/O off the streaming and GUI threads. Preserve decoder, audio and platform fallbacks unless evidence justifies a change.
+- Never put credentials, pairing PINs, VM addresses, raw provider traffic, microphone samples, local preferences or Keychain data in source, fixtures, diagnostics or packages.
+- Make UI and documentation claims from source and fresh test evidence. Do not present a fixture as proof of live provider, hardware or VM behavior.
 
-- `src/app/antcloud/controller.*`: GUI-facing state, saved settings, host discovery, pairing, launch and teardown orchestration.
-- `src/app/antcloud/providerworker.*`: HTTP/WebSocket requests, credentials, readiness, heartbeat and session timers.
-- `src/app/antcloud/protocol.h`: account/frame/address validation, stream limits, saved-setting normalization and provider minutes.
-- `src/app/antcloud/modifiermapping.h`: shared modifier defaults, unique-target assignment, saved-data normalization and stream snapshot encoding.
-- `src/app/antcloud/tokenstore.*`: device-local remembered token storage through Mac Keychain.
-- `src/app/antcloud/streambridge.h`: process-local stream commands and atomic termination/time snapshots across GUI/worker/SDL boundaries.
-- `src/app/antcloud/microphone*`: explicit Mac permission, bounded capture/conversion and the separate AntCloud UDP microphone sender.
-- `src/app/gui/AntCloudMain.qml`: account, settings, connection progress, notices and confirmation UI.
-- `src/app/backend/`: manager/seeker/NvHTTP host discovery, cached identity, certificate pinning and pairing.
-- `src/app/streaming/`: Session, input, audio, video and overlays. Modifier translation is in `input/antcloudinput.h`; throughput accounting is in `bandwidth.*`.
-- `src/tests/antcloud/`: isolated native fixtures; `tools/test_fetch_sdk.py` covers SDK verification.
-- `Build-Mac.command`, `Open-App.command`, `Test.command`, `tools/fetch_sdk.py`: build, launch, tests and verified SDK preparation.
+## Source map
 
-The supported user flow is a single native app. Keep provider control in process and off the streaming GUI loop; do not add a runtime helper or file-based IPC. Python is used for build tooling.
+The application has three cooperating parts: Qt owns user-facing state, `ProviderWorker` owns AntCloud network state on its `QThread`, and the existing Moonlight engine owns the native stream.
 
-## Connection and session contracts
+- `src/app/antcloud/controller.*` — UI-facing state, immediate preference persistence, connection orchestration and teardown.
+- `src/app/antcloud/providerworker.*` — AntCloud HTTP/WebSocket requests, authentication, startup, heartbeat, quota refresh and shutdown requests.
+- `src/app/antcloud/protocol.h` — validated provider values, resolution tiers, bitrate choices and settings normalization.
+- `src/app/antcloud/modifiermapping.h` — modifier defaults, collision handling, saved-data normalization and packed stream snapshots.
+- `src/app/antcloud/remainingtime.h` — bounded provider-minute formatting shared by the app and stream overlay.
+- `src/app/antcloud/tokenstore.*` — device-local remembered access and refresh tokens in macOS Keychain.
+- `src/app/antcloud/streambridge.h` — process-local, generation-bound commands and atomic stream state across Qt and SDL.
+- `src/app/antcloud/microphone*` — Mac permission, capture, conversion, queueing and AntCloud microphone delivery.
+- `src/app/gui/AntCloudMain.qml` — sign-in, settings, connection progress, notices, confirmations and help.
+- `src/app/backend/` — native host discovery, pairing, cached identity and pinned host certificate handling.
+- `src/app/streaming/` — Moonlight Session, input, playback, rendering and overlays.
+- `src/app/streaming/input/antcloudinput.h` — Mac-to-Windows modifier translation.
+- `src/app/streaming/input/antcloudcontrols.h` — the SDL stream controls window and shortcut reference.
+- `src/app/streaming/video/antcloudstats.h` — native stream statistics text.
+- `src/tests/antcloud/` — isolated protocol, lifecycle, input, statistics, microphone and QML fixtures.
+- `Build-Mac.command`, `Open-App.command`, `Test.command` — supported Mac build, launch and test entry points.
+- `tools/fetch_sdk.py`, `tools/test_fetch_sdk.py` — pinned SDK preparation and integrity checks.
 
-- Provider session → VM startup → fresh native host discovery → pairing/Desktop launch → readiness/address revalidation → video control. Native host launch must precede successful provider readiness. HTTP 400 means pending, never success.
-- Preserve request/frame size limits, deadlines, generation guards, HTTPS/WSS redirect restrictions and pinned host certificates.
-- Retiring host monitors must not overwrite a new connection’s host/app state or deliver queued discovery notifications. Serialize monitor identity checks and state writes against retirement with the manager lock. Suppress old queued callbacks, and release the manager lock before joining monitors in destruction.
-- A cached online host is not fresh discovery evidence. Successful polls notify discovery even when metadata is unchanged. Native failed read-only adds retry within the startup deadline, one in flight; cancellation stops retries. Retained CLI adds remain one-attempt unless retry is enabled.
-- Pairing dispatch is reply-bound, one-shot and stamped with the provider generation. After the first getservercert requestSent, wait one second for host challenge setup; cancel if the reply finishes or the session changes. This is a transport-ordering mitigation, not a readiness acknowledgment. Do not retry pairing/shutdown mutations or force-quit another host application automatically.
-- Stop/disconnect sends no explicit provider shutdown. Record Stop intent before queued worker cancellation or SDL exit. Accepted Shutdown writes alone mark expected termination; failed writes remain errors. Reset intent on each provider session.
-- Shutdown sends `closestream` once after deliberate confirmation. Report the request, not a confirmed off state. Cancel is the initial/default keyboard action; explicit Tab/Shift+Tab traversal and safe focus on reopen must remain.
-- Cancel pending readiness after shutdown and prevent stale callbacks from launching video or affecting another session.
-- Keep Connect disabled until provider stop, pairing completion/cancellation and Session deletion finish. Destroy the borrowed seeker before its manager.
-- Controller callbacks capture a non-null Session identity; retiring Session signals cannot change a newer attempt. Native Desktop launch/resume failures expose fixed numeric host/network status while raw host messages remain out of provider diagnostics.
-- A new connection clears prior session errors/notices/power status; successful video clears errors. Host contact and pairing are distinct stages. Stream advisories end with the stream without clearing unrelated notices.
-- Stop host polling before video launch and connection-progress repaint ticks after video connects. Preserve decoder/audio/platform fallbacks unless specific evidence justifies a change.
+Keep the supported user flow inside one application process. Do not add a runtime helper or file-based IPC for provider control.
 
-## Input, settings and statistics
+## Provider and stream lifecycle
 
-### Input
+The normal sequence is:
 
-Settings have two tabs: Video is initially selected; Keyboard contains the modifier editor. Switching tabs changes visibility without recreating controls or saving a different value. Keep the tabs inspectable while busy and disable stream/mapping edits; the microphone checkbox remains editable in an actively connected stream. Use scoped Basic controls only where custom styling is required; the remainder of the app uses its native style.
+1. authenticate or restore a remembered login;
+2. open the provider session and start or join the VM;
+3. discover a fresh native host;
+4. pair and launch Desktop;
+5. revalidate provider readiness and address;
+6. send video control and run the native stream;
+7. stop provider and native work before enabling another Connect.
 
-The native settings UI has only three rows: Command, Option and Control. Targets are None/Ctrl/Alt/Windows key (indices 0/1/2/3). Defaults are Command→Ctrl, Option→Windows and Control→Alt. Assigning an occupied non-None target clears the other row to None; duplicate None choices are allowed. None sends no remote modifier event or flag.
+Preserve these invariants:
 
-Persist the whole mapping immediately in `native/modifierMapping`; absent data uses the defaults. Invalid targets become None and malformed duplicate saved targets retain the earlier row. Disable changes while busy and snapshot the mapping once per SDL input handler so key-down/up pairs use the same mapping. The process bridge transfers all three targets in one atomic value; retained CLI sessions keep their existing mapping.
+- HTTP 400 during startup means pending, never ready.
+- Provider HTTP/WebSocket objects and timers stay on the provider worker thread.
+- Request and frame size limits, timeouts, generation guards, redirect restrictions and pinned host certificates remain enforced.
+- A cached online host is not fresh discovery evidence. Successful native polls notify discovery even when metadata is unchanged.
+- Retired host monitors cannot overwrite a new attempt or deliver stale discovery notifications. Release manager locks before joining monitor threads.
+- Pairing dispatch is reply-bound, one-shot and stamped with the provider generation. Do not retry pairing or shutdown mutations.
+- The host challenge delay is transport ordering, not provider readiness.
+- Session callbacks carry the active `Session` identity. A retiring session cannot change a newer attempt.
+- Cancel startup work after Stop or Shutdown so stale callbacks cannot launch video.
+- Destroy the borrowed seeker before its manager. Do not enable Connect until worker stop, pairing cleanup and Session deletion finish.
+- Native host launch/resume failures expose fixed safe numeric status. Raw host messages do not enter provider diagnostics.
 
-Recognize local physical Control+Command+Shift shortcuts before remote translation, including when every target is None. Translate both left/right scancodes and flags from the original event, never the partially translated result. Keep other key behavior intact. Maintain release-all/focus cleanup so capture changes, local controls and teardown cannot leave remote keys pressed.
+**Stop stream** records stop intent before queued cancellation or SDL exit and sends no explicit VM shutdown. **Shutdown VM** sends `closestream` once after deliberate confirmation. Report the request without claiming the VM is off. Cancel is the default confirmation action and keyboard traversal must remain explicit and safe.
 
-The stream panel shows Resume, Stop stream and Shutdown VM above a divider and fourteen compact physical-key shortcuts. B toggles microphone; M toggles mouse mode; H toggles the current stream’s hint. A separate top-right overlay uses the statistics font size and remains independent of the stats toggle. native/showControlsHint defaults true and is saved on Connect; the bridge initializes each Session from that setting. H is per-stream. Preserve all renderer placements/fallbacks and avoid unchanged/off hint work in the frame loop.
+Clear stale errors and notices when a new attempt begins. Successful video clears connection errors. Stream-only advisories end with that stream.
 
-The footer Controls button has a full-height dark fill, white text and visible keyboard focus. Its help uses the running application version and live mapping, lists actual engine shortcuts, and explains clipboard typing and Stop versus Shutdown. Bound the help viewport to the window, keep Close outside the scrollable content, and reset the scroll position on reopen.
+## Authentication, storage and diagnostics
 
-### Audio and microphone
+Passwords are transient. Remember access and refresh tokens together in a device-local Keychain item. Keep backward compatibility with a legacy raw access-token value.
 
-The pinned GameStream audio path receives host audio for Mac playback. AntCloud's Android client uses a separate microphone channel: raw 44,100 Hz mono signed PCM16 little-endian UDP to the validated provider VM address on port 9002, without an application header, acknowledgment or encryption. This contract comes from the supplied Android transport analysis; the user has confirmed live VM microphone input. UI/status/help must not retain obsolete Experimental/unverified wording. Local send status still describes local activity rather than an acknowledgment from the VM.
+Renew through `GET /api/users/refresh` with `refresh: JWT <refreshToken>`. Validate both rotated tokens before adopting them. Coalesce concurrent renewal and retry only authenticated reads once; never replay pairing, shutdown or another mutation. Authentication and session generations must reject stale replies.
 
-The Video checkbox is off on app launch and after every session; do not persist opt-in. Request Mac permission and start capture only when enabled in an actually connected stream. Physical Control+Command+Shift+B toggles sending with every modifier mapping. Local failures/denial disable the feature without terminating healthy video. The local shortcut carries its session generation so an old queued toggle cannot affect a reconnect.
+An expired JWT claim can trigger authenticated preflight. It never establishes login. Temporary validation or renewal failures keep saved credentials. Explicit sign-out requests Keychain deletion and reports a storage failure.
 
-Use AVAudioEngine capture independently of the Moonlight SDL playback subsystem, a bounded preallocated audio callback queue, and off-thread conversion/network work. The callback must not allocate, block, send packets or access the GUI. Preserve converter state, downmix/resample actual input to the wire format, cap raw datagrams at 882 bytes and discard stale queued audio. The sender uses 10 ms packets. Do not add headers/encryption incompatible with the recovered receiver contract.
+QSettings stores stream preferences and native pairing identity. Signing out does not clear those values.
 
-Mute/Stop/accepted Shutdown/provider failure/app closing immediately close the atomic send gate before queued teardown. Stop capture, join the worker, clear audio and destination, and invalidate late permission/capture callbacks on every teardown. Never retain audio or log raw samples/addresses/errors. Keep permission/capture/send state distinct from host delivery. While disabled, show no unencrypted-channel notice; show the short trusted-network notice only when enabled. Disabled input constructs no worker thread and runs no capture/socket/timer. Active pumping is 10 ms; health checks are bounded to 250 ms. Copy only populated callback samples and reuse consumer buffers. The app's usage description must survive deployment; future hardened-runtime or sandbox signing needs the corresponding audio/network entitlements. No host installation or firewall changes are part of this client feature.
+Diagnostics remain in memory until an explicit export. Keep at most 64 complete, fixed safe messages, each no longer than 512 characters including its prefix. Export atomically with owner read/write permissions. Never log or export secrets, VM addresses, raw packets or microphone audio.
 
-Selecting microphone before a connection shows no selection-status row. Keep an empty pending status hidden without reserving layout space; retain permission, capture, send and failure feedback and the enabled-only network notice.
+## Settings and resolution contracts
 
-### Settings
+The settings panel opens on **Video**. **Keyboard** contains the modifier editor. Tabs remain inspectable while the app is busy, but settings edits are disabled. The microphone remains editable during a connected stream.
 
-Standard presets are 1280×720 and 1920×1080; experimental presets are 2560×1440 and 3840×2160. Display experimental dimensions explicitly and enforce account limits. Fresh/invalid settings select 1080p, without a default label; retain explicit saved 720p. Changes apply to the next connection. The engine’s 4K→1080 fallback applies only to legacy NVIDIA hosts; preserve non-NVIDIA requests. Actual fallback sets Session legacy4KFallback and yields a fixed safe GUI advisory. Account allowance does not prove VM encoder/display support; keep SOPS/game optimization behavior unchanged.
+Every accepted setting is written immediately. Saved values override fresh defaults on the next app launch. In-stream shortcuts persist the resulting fullscreen, relative-mouse, statistics, controls-hint and microphone state for later sessions. Generation guards must reject queued updates from an old stream.
 
-Preserve resolution schema 2 migration: for stored schema below 2, index 2 maps to 1080p, and indices 3/4 shift down one; current indices remain stable. Changing dimensions/indices requires migration regressions.
+Fresh settings are:
 
-Frame rates are 30/60/120. `BitrateChoices` in protocol.h supplies 2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45 and 50 Mbps; client validation accepts 2–50 Mbps. Keep saved values normalized to visible choices and pass selected values to both provider requests and the native stream. Provider delivery at every requested rate is not established by loopback tests.
+- 1920 × 1080, 16:9
+- 60 FPS
+- 10 Mbps
+- H.264
+- fullscreen on
+- relative mouse on
+- stream statistics on
+- stream controls hint on
+- microphone off
+- Command→Ctrl, Option→Windows key, Control→Alt
 
-Codec indices 0/1/2 mean H.264/H.265 (HEVC)/AV1, default 0. Label H.265 and AV1 explicitly as Experimental. Persist codec independently of resolution schema. Use existing StreamingPreferences negotiation/fallbacks; selected higher codecs and experimental resolutions are not guaranteed by provider or decoder support. Native HDR remains disabled.
+The resolution indices are stable:
 
-### Statistics and account time
+| Index | UI label | Provider tier |
+| ---: | --- | ---: |
+| 0 | 1280 × 720, 16:9 | 720 |
+| 1 | 1920 × 1080, 16:9 | 1080 |
+| 2 | 2560 × 1440, 16:9 | 1440 |
+| 3 | 3840 × 2160, 16:9 | 2160 |
+| 4 | 2560 × 1600, 16:10 | 2160 |
+| 5 | 2048 × 1280, 16:10 | 1440 |
+| 6 | 1920 × 1200, 16:10 | 1440 |
+| 7 | 1680 × 1050, 16:10 | 1080 |
+| 8 | 1440 × 900, 16:10 | 1080 |
+| 9 | 1280 × 800, 16:10 | 1080 |
+| 10 | 1024 × 640, 16:10 | 720 |
+| 11 | 960 × 600, 16:10 | 720 |
 
-RTT is control round trip; loss is missing video frames; FPS is incoming video; Mbps is compressed video payload excluding audio/headers/recovery. Do not relabel these as input latency, raw packet loss, game FPS or total traffic.
+The provider tier bounds both dimensions; the native host still receives the exact width and height. Enforce the account limit before provider startup. Account allowance does not establish VM display or encoder support.
 
-Bandwidth averages use completed 250 ms buckets covering up to 2.5 seconds. Byte totals and duration must share completed boundaries and exclude unfinished samples. Preserve deterministic phase, expiry and quiet-interval tests. The selected rate reaches provider and StreamConfig; the common engine's compatibility adjustment remains intact.
+The current resolution schema is 3. For a stored schema below 2, old index 2 maps to current index 1 and old indices 3/4 shift down one. Schema 2 defined only indices 0–3, so a stored value above 3 from any schema below 3 normalizes to the 1080p default instead of acquiring a newly added meaning. Schema 3 retains indices 0–3 and appends the new modes at 4–11. Any index change requires migration regressions.
 
-Account minutes use validated `totalTimeMonth - timeUsedMonth`; zero total is unavailable. Stream updates use `control.timeLeft`. Accept only finite, nonnegative bounded integers; unknown is −1. Keep the last validated balance visible across Connect/Stop and failed refreshes. Clear account data on new authentication/sign-out; clear only the stream atomic snapshot at stream boundaries so an old session's quota cannot leak into a new one.
+Frame-rate indices 0/1/2 mean 30/60/120 FPS. `BitrateChoices` is 2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45 and 50 Mbps. Normalize saved values to a visible choice and pass the value to both provider and native stream configuration.
 
-The provider worker refreshes `/api/users/me` on stream start/end, every 60 seconds after authentication, and when login omits quota. Allow one refresh in flight. Authentication/session generations and the time revision guard prevent stale responses overwriting a newer stream report or another account. Quota failures stay nonfatal and never remove credentials or terminate streaming. Transfer only validated minutes atomically; keep networking off decoder/GUI threads and never add a guessed billable countdown or power-state inference.
+Codec indices 0/1/2 mean H.264/H.265/AV1. UI labels are **H.264**, **H.265 - if supported** and **AV1 - if supported**. Use existing `StreamingPreferences` negotiation and fallback behavior. Native HDR remains disabled.
 
-Coalesce refresh requests made during a pending read into one deferred read. A boundary refresh must still run after an intervening stream report changes the time revision. Invalid stream reports must preserve both the GUI balance and the current stream snapshot; only explicit authentication/session boundaries clear their respective data.
+The engine's 4K-to-1080 fallback applies only to legacy NVIDIA hosts. Preserve exact non-NVIDIA requests and the fixed safe advisory for an actual fallback.
 
-## Privacy and storage
+## Keyboard and local controls
 
-Credentials stay on the provider worker. Remember access and refresh tokens together in device-local Keychain; passwords are transient. Keep the existing Keychain item backward compatible with legacy raw access tokens. Renew through GET /api/users/refresh with refresh: JWT <refreshToken>; validate accessToken/refreshToken before adopting rotation. Coalesce renewal; guard auth/session generations and retry only authenticated reads once. Never replay pairing/shutdown or other mutations. Use strict whole-string token/PIN validation, including terminal newline and length boundaries. An expired JWT claim selects an authenticated preflight before opening the provider socket; it never establishes login. Cancel stale preflight callbacks and detach old sockets before reconnect. Ordinary validation or renewal network failures retain saved credentials. Explicit sign-out requests its deletion and reports storage failures.
+Modifier rows are Command, Option and Control. Targets are None, Ctrl, Alt and Windows key at indices 0/1/2/3. Assigning an occupied non-None target clears the other row; duplicate None values are allowed. Invalid stored targets become None and malformed duplicates keep the earlier row.
 
-QSettings retains native preferences and host/pairing identity. Sign-out does not erase these or diagnostic history. Never share settings files as diagnostic evidence.
+Snapshot all three targets once per SDL input handler so down/up pairs use the same mapping. Translate left and right scancodes and modifier flags from the original event. None sends no remote modifier event or flag. Preserve release-all and focus cleanup so changing capture or opening controls cannot leave remote keys held.
 
-Diagnostic history is in memory, at most 64 fixed safe messages and 512 characters per complete prefixed entry. Export is explicit, owner-readable/writable and atomic through QSaveFile. Normal app use creates no routine diagnostic files. Do not enable developer console/file logging in normal packaged builds.
+Recognize physical Control+Command+Shift shortcuts before remote modifier translation, even when all mappings are None. The shortcuts are P/Q/Z/X/S/H/M/B/V/C/D/L/K/E. X, S, H, M and B persist their resulting preference. Retained non-native CLI sessions keep the upstream mapping behavior.
 
-## Build and local verification
+The in-stream controls window shows Resume, Stop stream and Shutdown VM above a divider and a compact shortcut reference. The top-right controls hint uses the statistics font size and remains independent of the statistics toggle.
 
-Mac source builds require Apple command-line tools, Homebrew, Python 3.10+ and compatible Qt 6.11+ modules: qtbase, qtdeclarative, qtsvg, qttools and qtwebsockets. The builder reuses installed modules, verifies pinned Moonlight SDK v19, runs core fixtures, refreshes makefiles, builds the full engine, deploys frameworks/QML, signs locally and smoke-tests CLI help/version. Regenerate the generated app's plist on incremental builds: qmake's bundle rule has no template prerequisite. Compare the staged microphone usage description with the source template before signing or replacing output.
+The regular window's Controls button has a full-height dark fill, white text and visible keyboard focus. Its help uses the running version and live mapping. Bound the viewport to the window, keep Close outside the scroll area and reset scroll position when reopened.
 
-Build only the requested architecture/OS target. The script uses the build Mac's architecture and OS major; do not promise universal binaries or older macOS support. Generated app staging must pass before replacing current output. Do not touch the installed Applications copy. Keep SDK inventory/hash/symlink checks and extraction path/size limits.
+## Audio and microphone
 
-Native version lives in `src/app/antcloud/version.txt` and is embedded as a resource. CLI/About and both bundle version fields derive from it. Upstream `src/app/version.txt` remains 6.2.0. Build output stays in `build/`/`dist/`, SDK in `src/libs/mac/`.
+GameStream audio carries Windows playback to the Mac. Microphone input uses a separate AntCloud channel: raw 44,100 Hz mono signed PCM16 little-endian UDP to the validated VM address on port 9002, with no application header, acknowledgment or encryption.
 
-Run the smallest checks proving the change. Native lifecycle/input/UI changes require the fixture suite:
+The saved microphone preference defaults off. Enabling it before a connection must not create a capture worker, timer or socket. Start permission and capture only in a connected stream. Teardown always closes the send gate, stops capture, joins the worker, clears queued audio and invalidates late callbacks while preserving the user's preference.
+
+Permission denial, capture loss or conversion failure disables the current capture attempt without terminating video. Preserve the user's saved opt-in and the visible failure status; a later connected session may try again unless the user switches the preference off. Keep preference, permission, capture, send and failure state distinct from host delivery.
+
+Use AVAudioEngine independently of Moonlight playback. The audio callback must not allocate, block, send packets or touch Qt GUI state. Use the bounded preallocated queue and off-thread conversion/network work. Preserve converter state, downmix and resample actual input, send 10 ms packets no larger than 882 bytes, and discard stale queued audio.
+
+Show the short trusted-network notice only while microphone sending is enabled. Do not claim that local UDP sends prove VM delivery. Hardened-runtime or sandbox signing requires the corresponding microphone and network entitlements.
+
+## Statistics and provider time
+
+The native overlay has one line with RTT, loss, FPS, Mbps and provider time. It does not show stream dimensions. Time uses bounded hours/minutes formatting such as `120h 10m`; unknown is `unavailable`.
+
+- RTT is control round-trip time.
+- Loss is missing video frames.
+- FPS is incoming video frames.
+- Mbps is compressed video payload excluding audio, headers and recovery.
+
+Do not relabel these as input latency, raw packet loss, game render rate or total traffic.
+
+Bandwidth averages use completed 250 ms buckets covering up to 2.5 seconds. Byte totals and elapsed time must use the same completed boundaries and exclude unfinished samples.
+
+Account minutes are `totalTimeMonth - timeUsedMonth`; a zero total is unavailable. Active stream updates come from `control.timeLeft`. Accept only finite, nonnegative integers within `int`; unknown is -1. The provider worker refreshes account time after authentication, at stream start/end and every 60 seconds. Allow one read in flight and coalesce another request into one deferred refresh.
+
+Keep the last validated account balance through Stop and temporary refresh failure. Clear account data on a new authentication boundary or sign-out. Clear the stream's atomic value at stream boundaries so an old session cannot leak quota into a new one. Never synthesize a countdown or infer VM power from time data.
+
+## Build and tests
+
+The supported Mac build path is documented in [build.md](build.md). Native version is stored in `src/app/antcloud/version.txt` and embedded as a resource. CLI/About and both bundle version fields derive from it. Keep upstream `src/app/version.txt` at Moonlight 6.2.0.
+
+Run the smallest fixture that proves a change, followed by the integrated suite for native lifecycle, input, UI or packaging work:
 
 ```bash
 bash Test.command
 ```
 
-`--core-only` skips QML. On Linux use `QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software bash Test.command`, with Qt/qmake6, SDL2/SDL2_ttf and OpenSSL development packages; engine builds also need their platform/media dependencies.
+`bash Test.command --core-only` skips QML. On Linux, use offscreen Qt and software RHI with Qt/qmake6, SDL2/SDL2_ttf and OpenSSL development packages; a full engine build also needs its platform and media dependencies.
 
-Fixtures isolate real accounts, Keychain and provider access. Preserve coverage for protocol/settings/migration, modifier defaults/collisions/None/persistence/both sides/release pairs, physical local controls, bounded formatting, one-shot mutations, heartbeats, Stop/accepted-versus-rejected Shutdown, reconnect/cancellation, real loopback manager/seeker/NvHTTP, account/stream quota boundaries and stale/failed background refreshes, bandwidth windows, safe confirmation and actual QML layout/state.
+For UI fixture screenshots, create an explicit output directory and set `ANTCLOUD_SCREENSHOT_DIR`. Inspect narrow and wide layouts in light and dark themes. Forms remain centered, tall content scrolls to the footer, tabs remain inspectable while busy, and dialogs keep their actions reachable.
 
-On Mac, SDK library lookup is scoped to test processes and fixtures target the Mac's OS major. Standalone tests have no app Frameworks directory; do not alter SDK install names or shell profiles to accommodate them. Run UI executables from their build folder.
+Also run:
 
-Run `qmllint src/app/gui/AntCloudMain.qml`, `bash -n` on command scripts, Python syntax checks and `git diff --check`. Documentation changes need source-backed fact/link/anchor checks. Build/version changes need a full Mac build and CLI/plist/signature checks. Review correctness/security and architecture independently for substantive changes.
+```bash
+/opt/homebrew/bin/qmllint src/app/gui/AntCloudMain.qml
+bash -n Build-Mac.command Open-App.command Test.command
+python3 -m py_compile tools/fetch_sdk.py tools/test_fetch_sdk.py
+git diff --check
+```
 
-Inspect narrow/wide light/dark states after layout edits; compact forms stay centered and tall content scrolls to the footer, with consistent separators. Create a screenshot directory and set `ANTCLOUD_SCREENSHOT_DIR` explicitly for fixture exports.
+Documentation changes require source-backed fact, link and anchor checks. Version changes require a full Mac build plus executable, plist and signature checks.
 
-## Target-Mac verification
+## Target-Mac checks
 
-Fixtures do not establish live Keychain, provider pairing/quota, VideoToolbox performance, experimental codec/resolution support, real microphone permission/device behavior or VM power. Live provider actions need authorization for that account/session.
+Fixtures isolate real accounts, Keychain and microphone devices. Before publishing, check the generated app on the target Mac and an authorized account:
 
-1. Check the generated app's About version and target compatibility. Test sign-in, remembered login, reopen and sign-out.
-2. Connect using a standard resolution and H.264. Check honest stage progression, video/audio, relative mouse, edge clicks, focus recovery, saved modifier choices and remote shortcuts. Test target stealing, None and physical local controls after changing all mappings.
-3. Test local controls, Resume, Stop and same-process reconnect. Check advisory cleanup and fresh discovery.
-4. Save Windows work before deliberate Shutdown. Confirm default Cancel, explicit one-shot request, separate VM power information and dashboard power state; reconnect after cleanup.
-5. Verify a genuine failed attempt reports its own issue and the next attempt clears stale state. Compare remaining minutes after login, during streaming and after Stop with provider data; allow the refresh interval. Exercise experimental settings only where supported.
-6. Inspect narrow/wide light/dark UI and explicit diagnostic export without sharing preferences or Keychain contents.
-7. For microphone validation, opt in after checking the unencrypted-channel notice. Test Mac permission allowed/denied/revoked, absent/changed input devices, B mute/re-enable, quiet input/speech and repeated reconnects. Verify the provider recording endpoint, its Windows input meter and an intelligible recording; local UDP sends alone are insufficient. Check that Stop, native failure, Shutdown and quit leave no capture/sends or old audio. Compare packet timing/size with a working Android reference before claiming compatibility.
+1. Confirm About, CLI and bundle versions and the minimum macOS target.
+2. Sign in, restore remembered login, reopen and sign out.
+3. Connect with 1920 × 1080, 60 FPS, 10 Mbps and H.264. Check video, playback audio, input, focus recovery and Stop/reconnect.
+4. Change every modifier target, including None and target stealing, then verify physical local shortcuts still work.
+5. Toggle X/S/H/M/B during a stream, reconnect and reopen to confirm the resulting states persist.
+6. Save Windows work, confirm Shutdown defaults to Cancel, and verify a single request plus dashboard state.
+7. Compare app and overlay time with provider data after login, during streaming and after Stop.
+8. Exercise each desired resolution and optional codec only on a VM that exposes compatible display and encoder support.
+9. Test microphone permission allowed/denied/revoked, quiet input and speech, B mute/re-enable, reconnect and teardown. Confirm input through the VM's recording endpoint; local sending is insufficient evidence.
+10. Inspect the regular window, controls help, in-stream controls and hint at narrow/wide sizes and in light/dark appearance.
 
 ## Packaging
 
-Keep the complete modified engine, pinned public dependency source, GPL/copyright/SDK notices and all three guides. `source-provenance.json` records exact upstream/submodule revisions, SDK digest, native version and repository. Change history belongs in Git; do not add patch archives or extra documentation folders.
+Keep the complete modified Moonlight engine, pinned public dependency source, GPL/copyright/SDK notices and the three project guides. `source-provenance.json` records upstream revisions, dependency digest, native version and repository.
 
-Regenerate sorted `source-manifest.json` as relative path→SHA-256, excluding itself. Check all intended source files are present and match. Exclude SDK/build/binaries, Git/runtime/editor state, captures, credentials, logs and diagnostic exports.
+Regenerate `source-manifest.json` as a sorted relative-path-to-SHA-256 map, excluding itself. Exclude build output, SDK binaries, Git/editor/runtime state, captures, credentials, logs, preferences and diagnostic exports.
 
-Create source and Mac app ZIPs in `dist/` with versioned names. Verify entry uniqueness, CRC and hashes; extract the source and stage in a fresh temporary Git repository to verify manifest membership and exclusions. Check archived app plist/executable versions against the generated bundle and provide SHA-256 checksums.
+Create versioned source and Mac app ZIPs in `dist/`. Verify:
 
-Local builds are ad-hoc signed. Developer ID signing, notarization and publication are separate actions; do not claim production certification or live performance without evidence.
+- archive entry uniqueness and CRC;
+- SHA-256 checksums;
+- source manifest membership and hashes;
+- fresh Git staging after source extraction;
+- executable and both plist versions;
+- minimum macOS target;
+- QML modules and microphone usage description;
+- deep strict signature verification on the extracted app; and
+- only the 2.0.0 app and release artifacts remain in `dist/`.
 
-## Current verification
+Local packages are ad-hoc signed. Developer ID signing, notarization and publication are separate operations and require separate evidence.
 
-Version 1.0.8 passed the full Mac fixture suite: six SDK checks, standalone protocol/input assertions, and 127 Qt test rows (provider 47, controls 6, seeker 18, bandwidth 5, microphone 13 and UI 38), with no failures. Coverage includes retired host polls during immediate reconnect, stale Session callbacks, pairing dispatch, renewal/rotation and strict token/PIN boundaries. QML lint, command-script syntax, Python syntax, guide links/anchors and whitespace checks passed.
+## Verified release behavior
 
-Actual fixture screenshots were inspected for compact/wide light/dark Video and Keyboard tabs, microphone notices off/on, scrollable help with its reachable Close button, and the SDL action panel and controls hint. The pending microphone selection row is absent, including when selected; permission/capture/send/error feedback remains covered. Independent correctness/security and architecture reviews found no unresolved blockers, including a fresh review of the microphone status change.
+The 2.0.0 Mac fixture suite passed six SDK checks, standalone protocol/input/statistics assertions, and 137 Qt test rows: provider 47, controls 7, seeker 18, bandwidth 5, microphone 14, production Controller settings 5 and UI 41. The real Controller fixture verifies immediate saves, reloads, shortcut delivery after Stop, stale generations and microphone preference notification after a local failure. The queued host-monitor regression also passed 50 isolated repetitions after deterministic fixture setup.
 
-The full Apple Silicon build passed deployment, CLI help/version, both bundle version fields, microphone usage-description and strict deep ad-hoc signature checks. It targets macOS 26.0 and uses Qt 6.11.2. The installed macOS 27 SDK produces Qt's SDK compatibility warning; build success does not establish hardware performance or compatibility beyond this target.
+QML lint, shell/Python syntax, documentation targets and whitespace checks passed. Actual fixture screenshots cover Video/Keyboard defaults, supported-codec labels, compact/wide light/dark states, enabled-only microphone notices, scrollable help and the SDL controls panel/hint. Independent correctness/security and architecture reviews found no unresolved blockers.
 
-Release verification checks the 571-file source manifest, the 572-entry source ZIP including that manifest, fresh Git staging after extraction, archive uniqueness/CRC/hashes, the extracted app's signature/version/QML modules and SHA-256 checksums. Only the app and versioned 1.0.8 packages remain in `dist/`.
+The full Apple Silicon build passed deployment, CLI help/version, both bundle version fields, the microphone usage description and strict deep ad-hoc signature verification. It targets macOS 26.0 with Qt 6.11.2. The installed macOS 27 SDK produces Qt's compatibility warning; these build checks do not prove performance or compatibility on other hardware or targets.
 
-These checks isolate real accounts, Keychain and microphone capture. Live provider pairing, immediate reconnect, renewal, quota, VM power, real microphone permission/devices and VideoToolbox performance were not exercised for this build. User-reported live microphone success is separate evidence. The one-second PIN delay mitigates ordering without proving host readiness; experimental codec/resolution support still depends on the VM. This build is not notarized.
+These fixtures isolate accounts, Keychain and microphone devices. Live provider renewal, VM power, display/codec availability, actual Mac permission/devices and hardware performance require target-Mac verification; a passing fixture does not establish them.

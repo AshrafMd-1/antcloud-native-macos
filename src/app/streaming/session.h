@@ -170,7 +170,7 @@ private:
     void getWindowDimensions(int& x, int& y,
                              int& width, int& height);
 
-    void toggleFullscreen();
+    bool toggleFullscreen();
 
     void notifyMouseEmulationMode(bool enabled);
 

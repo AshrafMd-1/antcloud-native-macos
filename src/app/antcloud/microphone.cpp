@@ -187,7 +187,7 @@ void Microphone::startSession(const QString& host) {
     emit changed();
 }
 void Microphone::stopSession() {
-    d->stopWorker(); d->host.clear(); d->enabled = false; d->status = "Microphone off";
+    d->stopWorker(); d->host.clear(); d->status = d->enabled ? QString() : QString("Microphone off");
     emit changed();
 }
 }

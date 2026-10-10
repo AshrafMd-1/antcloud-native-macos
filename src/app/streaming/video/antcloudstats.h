@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cmath>
+#include "antcloud/remainingtime.h"
 
 namespace AntCloudStats {
 struct Snapshot {
@@ -11,8 +12,6 @@ struct Snapshot {
     uint32_t networkDroppedFrames;
     double receivedFps;
     double videoMbps;
-    int width;
-    int height;
     int remainingMinutes = -1;
 };
 
@@ -20,8 +19,7 @@ inline void format(const Snapshot& value, char* output, int length)
 {
     if (length <= 0) return;
     char rtt[32], loss[32], fps[32], bitrate[32], timeLeft[48];
-    if (value.remainingMinutes >= 0) std::snprintf(timeLeft, sizeof(timeLeft), "%d min", value.remainingMinutes);
-    else std::snprintf(timeLeft, sizeof(timeLeft), "N/A");
+    AntCloud::formatRemainingTime(timeLeft, sizeof(timeLeft), value.remainingMinutes);
     if (value.rttMs) std::snprintf(rtt, sizeof(rtt), "%u ms", value.rttMs);
     else std::snprintf(rtt, sizeof(rtt), "N/A");
     if (value.totalFrames) std::snprintf(loss, sizeof(loss), "%.1f%%",
@@ -34,7 +32,7 @@ inline void format(const Snapshot& value, char* output, int length)
         std::snprintf(bitrate, sizeof(bitrate), "%.1f Mbps", value.videoMbps);
     else std::snprintf(bitrate, sizeof(bitrate), "N/A");
     std::snprintf(output, static_cast<size_t>(length),
-        "RTT %s | Loss %s | %s FPS | %s | %dx%d\nTime left %s",
-        rtt, loss, fps, bitrate, value.width, value.height, timeLeft);
+        "RTT %s | Loss %s | %s FPS | %s | Time left %s",
+        rtt, loss, fps, bitrate, timeLeft);
 }
 }

@@ -13,15 +13,24 @@ class Receiver : public QObject {
     Q_OBJECT
 public:
     int requests = 0, stops = 0, microphoneToggles = 0, pairingRequests = 0;
-    qulonglong microphoneGeneration = 0;
+    int settingUpdates = 0, microphonePreferences = 0, lastSetting = -1;
+    bool lastSettingValue = false;
+    qulonglong microphoneGeneration = 0, settingsGeneration = 0;
 public slots:
     void shutdown() { ++requests; }
     void stop() { ++stops; }
     void pair(QString, qulonglong generation) {
         if (generation == AntCloud::StreamBridge::pairingGeneration()) ++pairingRequests;
     }
-    void toggleMicrophone(qulonglong generation) {
-        if (generation == microphoneGeneration && AntCloud::StreamBridge::active() && !AntCloud::StreamBridge::expectedEnd()) ++microphoneToggles;
+    void persistMicrophonePreference(bool value, qulonglong generation, qulonglong) {
+        if (generation == settingsGeneration) {
+            ++microphoneToggles; microphonePreferences += value ? 1 : -1;
+        }
+    }
+    void persistStreamSetting(int setting, bool value, qulonglong generation) {
+        if (generation == settingsGeneration) {
+            ++settingUpdates; lastSetting = setting; lastSettingValue = value;
+        }
     }
 };
 class OverlayReceiver : public Overlay::IOverlayRenderer {
@@ -103,9 +112,11 @@ private slots:
     void microphoneMuteAndSessionGuards() {
         using Bridge = AntCloud::StreamBridge;
         Receiver receiver;
-        Bridge::install(&receiver); Bridge::installMicrophoneController(&receiver);
+        Bridge::install(&receiver); Bridge::installSettingsController(&receiver);
         Bridge::setExpectedEnd(false); Bridge::setHostRequestsAllowed(true); Bridge::setActive(true);
+        receiver.settingsGeneration = Bridge::beginSettingsSession();
         receiver.microphoneGeneration = Bridge::beginMicrophoneSession();
+        Bridge::setMicrophonePreference(true);
         QVERIFY(!Bridge::microphoneAllowed());
         Bridge::setMicrophoneAllowed(true); QVERIFY(Bridge::microphoneAllowed());
         QVERIFY(Bridge::toggleMicrophone());
@@ -114,7 +125,7 @@ private slots:
         QVERIFY(Bridge::toggleMicrophone());
         receiver.microphoneGeneration = Bridge::beginMicrophoneSession();
         QCoreApplication::processEvents();
-        QCOMPARE(receiver.microphoneToggles,1); // An old session's queued toggle is ignored.
+        QCOMPARE(receiver.microphoneToggles,2); // Preference persistence is independent from capture generation.
         QVERIFY(Bridge::toggleMicrophone());
         Bridge::setMicrophoneAllowed(true); Bridge::invalidateMicrophoneSession();
         QVERIFY(!Bridge::microphoneAllowed());
@@ -123,7 +134,7 @@ private slots:
         QVERIFY(!Bridge::microphoneAllowed()); // A stale enable cannot reopen a terminated session.
         // The controller rejects an ended stream's generation before its GUI phase changes.
         receiver.microphoneGeneration=Bridge::microphoneSessionGeneration();
-        QCoreApplication::processEvents(); QCOMPARE(receiver.microphoneToggles,1);
+        QCoreApplication::processEvents(); QCOMPARE(receiver.microphoneToggles,3);
         Bridge::setMicrophoneAllowed(true); Bridge::setExpectedEnd(true);
         QVERIFY(!Bridge::microphoneAllowed()); QVERIFY(!Bridge::toggleMicrophone());
         Bridge::setExpectedEnd(false); QVERIFY(!Bridge::microphoneAllowed());
@@ -132,7 +143,29 @@ private slots:
         Bridge::setHostRequestsAllowed(true); QVERIFY(!Bridge::microphoneAllowed());
         Bridge::setMicrophoneAllowed(true); Bridge::setActive(false);
         QVERIFY(!Bridge::microphoneAllowed()); QVERIFY(!Bridge::toggleMicrophone());
-        Bridge::installMicrophoneController(nullptr); Bridge::install(nullptr);
+        Bridge::installSettingsController(nullptr); Bridge::install(nullptr);
+    }
+    void shortcutSettingsRejectRetiredSessions() {
+        using Bridge = AntCloud::StreamBridge;
+        Receiver receiver;
+        Bridge::install(&receiver); Bridge::installSettingsController(&receiver);
+        Bridge::setExpectedEnd(false); Bridge::setHostRequestsAllowed(true); Bridge::setActive(true);
+        receiver.settingsGeneration = Bridge::beginSettingsSession();
+        Bridge::persistStreamSetting(Bridge::Fullscreen, false);
+        QTRY_COMPARE(receiver.settingUpdates, 1);
+        QCOMPARE(receiver.lastSetting, int(Bridge::Fullscreen)); QVERIFY(!receiver.lastSettingValue);
+        Bridge::persistStreamSetting(Bridge::RelativeMouse, true);
+        Bridge::setActive(false);
+        QTRY_COMPARE(receiver.settingUpdates, 2); // A change made before Stop is still retained.
+        Bridge::setActive(true);
+        Bridge::persistStreamSetting(Bridge::RelativeMouse, false);
+        receiver.settingsGeneration = Bridge::beginSettingsSession();
+        QCoreApplication::processEvents();
+        QCOMPARE(receiver.settingUpdates, 2);
+        Bridge::persistStreamSetting(Bridge::Stats, false);
+        QTRY_COMPARE(receiver.settingUpdates, 3);
+        QCOMPARE(receiver.lastSetting, int(Bridge::Stats)); QVERIFY(!receiver.lastSettingValue);
+        Bridge::setActive(false); Bridge::installSettingsController(nullptr); Bridge::install(nullptr);
     }
     void localEventsAndExplicitShutdown() {
         AntCloud::StreamBridge::setExpectedEnd(false);

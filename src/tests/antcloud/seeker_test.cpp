@@ -40,6 +40,15 @@ class SeekerTest : public QObject {
     int currentGame = 0;
     bool delayNextPoll = false;
     QPointer<QTcpSocket> delayedPoll;
+    static bool sendResponse(QTcpSocket* socket, const QByteArray& xml) {
+        const QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
+            + QByteArray::number(xml.size()) + "\r\nConnection: close\r\n\r\n" + xml;
+        if (socket->write(response) != response.size()) return false;
+        while (socket->bytesToWrite() > 0 && socket->waitForBytesWritten(1000)) {}
+        if (socket->bytesToWrite() > 0) return false;
+        socket->disconnectFromHost();
+        return true;
+    }
 private slots:
     void initTestCase() {
         QVERIFY(storage.isValid());
@@ -227,20 +236,16 @@ private slots:
     }
     void queuedRetiredPollCannotSatisfyFreshDiscovery() {
         ComputerManager manager(StreamingPreferences::get());
-        {
-            ComputerSeeker first(&manager, address);
-            QSignalSpy found(&first, &ComputerSeeker::computerFound);
-            first.start(2500); QVERIFY(found.wait(3000));
-        }
+        QSignalSpy added(&manager, &ComputerManager::computerAddCompleted);
+        manager.addNewHostManually(address);
+        QVERIFY(added.wait(3000));
+        QVERIFY(added.first().first().toBool());
         NvComputer* computer = manager.getComputers().first();
         delayNextPoll = true;
         manager.startPolling();
         QTRY_VERIFY_WITH_TIMEOUT(!delayedPoll.isNull(), 2000);
         const auto info = hostInfo(17);
-        delayedPoll->write("HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
-            + QByteArray::number(info.size()) + "\r\nConnection: close\r\n\r\n" + info);
-        QVERIFY(delayedPoll->flush());
-        delayedPoll->disconnectFromHost();
+        QVERIFY(sendResponse(delayedPoll, info));
 
         // Let the worker finish while its notifications remain queued on this
         // thread. Retiring it must invalidate those notifications as well as reads.
@@ -264,9 +269,7 @@ private slots:
         QCOMPARE(polled.count(), 0);
         QCOMPARE(changed.count(), 0);
         QCOMPARE(found.count(), 0);
-        delayedPoll->write("HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
-            + QByteArray::number(info.size()) + "\r\nConnection: close\r\n\r\n" + info);
-        delayedPoll->disconnectFromHost();
+        QVERIFY(sendResponse(delayedPoll, info));
         QVERIFY(found.wait(3000));
         QCOMPARE(found.count(), 1);
         QCOMPARE(polled.count(), 1);

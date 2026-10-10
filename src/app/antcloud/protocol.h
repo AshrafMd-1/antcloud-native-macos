@@ -13,6 +13,7 @@
 namespace AntCloud {
 constexpr int StartupTimeoutMs = 300000;
 constexpr int DefaultResolutionIndex = 1;
+constexpr int ResolutionSchema = 3;
 inline ModifierMapping savedModifierMapping(const QVariantList& values) {
     if (values.size() != 3) return {};
     std::array<int, 3> targets{};
@@ -31,12 +32,15 @@ inline int savedResolutionIndex(int index, int schema) {
         if (index == 2) return 1; // Schema 1 index 2 was 1440×900; migrate it to 1080p.
         if (index == 3 || index == 4) return index - 1;
     }
-    return index >= 0 && index <= 3 ? index : DefaultResolutionIndex;
+    // Schema 2 only defined indices 0-3. Treat previously invalid stored values
+    // as corrupt instead of silently adopting a newly added resolution.
+    if (schema < ResolutionSchema && index > 3) return DefaultResolutionIndex;
+    return index >= 0 && index <= 11 ? index : DefaultResolutionIndex;
 }
 constexpr int BitrateChoices[] = {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000};
 inline int savedBitrate(int bitrate) {
     for (int choice : BitrateChoices) if (bitrate == choice) return bitrate;
-    return 6000;
+    return 10000;
 }
 inline int savedCodecIndex(int index) { return index >= 0 && index <= 2 ? index : 0; }
 inline int providerMinutes(const QJsonValue& value) {
@@ -78,12 +82,19 @@ inline QString vmAddress(const QJsonObject& value) {
     return address.toString();
 }
 struct StreamSettings {
-    int width = 1280, height = 720, fps = 60, bitrate = 6000;
+    int width = 1920, height = 1080, fps = 60, bitrate = 10000;
     int preset() const {
         if (width == 1280 && height == 720) return 720;
         if (width == 1920 && height == 1080) return 1080;
         if (width == 2560 && height == 1440) return 1440;
         if (width == 3840 && height == 2160) return 2160;
+        // Provider tiers bound both requested dimensions while the native host
+        // still receives the exact resolution.
+        if (width == 2560 && height == 1600) return 2160;
+        if ((width == 2048 && height == 1280) || (width == 1920 && height == 1200)) return 1440;
+        if ((width == 1680 && height == 1050) || (width == 1440 && height == 900)
+            || (width == 1280 && height == 800)) return 1080;
+        if ((width == 1024 && height == 640) || (width == 960 && height == 600)) return 720;
         return 0;
     }
     bool isValid() const {

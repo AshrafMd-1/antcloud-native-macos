@@ -1,4 +1,5 @@
 #include "antcloud/protocol.h"
+#include "antcloud/remainingtime.h"
 #include <QCoreApplication>
 #include <cassert>
 #include <QSettings>
@@ -51,7 +52,8 @@ int main(int argc, char** argv) {
     assert(vmAddress({{"vmip", "https://example.com"}}).isEmpty());
     StreamSettings s;
     assert(s.isValid());
-    assert(s.providerSpec() == "720 6000 60 10");
+    assert(s.width == 1920 && s.height == 1080 && s.bitrate == 10000);
+    assert(s.providerSpec() == "1080 10000 60 10");
     const StreamSettings presets[] = {
         {1280, 720, 60, 6000}, {1920, 1080, 60, 6000},
         {2560, 1440, 60, 6000}, {3840, 2160, 60, 6000}
@@ -65,23 +67,35 @@ int main(int argc, char** argv) {
         assert(presets[i].preset() == providerPresets[i]);
         assert(presets[i].providerSpec() == QLatin1String(providerSpecs[i]));
     }
-    s.width = 1440; s.height = 900;
-    assert(!s.isValid() && s.preset() == 0);
+    const StreamSettings macPresets[] = {
+        {2560,1600,60,10000}, {2048,1280,60,10000}, {1920,1200,60,10000},
+        {1680,1050,60,10000}, {1440,900,60,10000}, {1280,800,60,10000},
+        {1024,640,60,10000}, {960,600,60,10000}
+    };
+    const int macProviderPresets[] = {2160,1440,1440,1080,1080,1080,720,720};
+    for (int i = 0; i < 8; ++i) {
+        assert(macPresets[i].isValid());
+        assert(macPresets[i].preset() == macProviderPresets[i]);
+        assert(savedResolutionIndex(i + 4, ResolutionSchema) == i + 4);
+    }
+    assert(savedResolutionIndex(12, ResolutionSchema) == DefaultResolutionIndex);
     s.width = 1440; s.height = 901;
-    assert(!s.isValid());
+    assert(!s.isValid() && s.preset() == 0);
     for (int old = 0; old < 5; ++old) {
         const int migrated[] = {0, 1, 1, 2, 3};
         assert(savedResolutionIndex(old, 1) == migrated[old]);
     }
     for (int current = 0; current < 4; ++current) assert(savedResolutionIndex(current, 2) == current);
-    assert(savedResolutionIndex(99, 2) == 1);
+    assert(savedResolutionIndex(4, 2) == DefaultResolutionIndex);
+    for (int current = 0; current < 12; ++current) assert(savedResolutionIndex(current, ResolutionSchema) == current);
+    assert(savedResolutionIndex(99, ResolutionSchema) == 1);
     assert(savedResolutionIndex(-1, 1) == 1);
-    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), 2) == 1);
+    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), ResolutionSchema) == 1);
     settings.setValue("native/resolutionIndex", 0);
-    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), 2) == 0);
+    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), ResolutionSchema) == 0);
     for (int bitrate : BitrateChoices) assert(savedBitrate(bitrate) == bitrate);
     assert(savedBitrate(45000) == 45000 && savedBitrate(50000) == 50000);
-    assert(savedBitrate(1999) == 6000 && savedBitrate(50001) == 6000);
+    assert(savedBitrate(1999) == 10000 && savedBitrate(50001) == 10000);
     assert(savedCodecIndex(-1) == 0 && savedCodecIndex(3) == 0);
     for (int codec = 0; codec < 3; ++codec) assert(savedCodecIndex(codec) == codec);
     assert(providerMinutes(0) == 0 && providerMinutes(123) == 123);
@@ -94,12 +108,21 @@ int main(int argc, char** argv) {
     assert(accountRemainingMinutes({{"user", QJsonObject{{"totalTimeMonth", 0}, {"timeUsedMonth", 0}}}}) == -1);
     assert(accountRemainingMinutes({{"user", QJsonObject{{"totalTimeMonth", "1000"}, {"timeUsedMonth", 250}}}}) == -1);
     assert(accountRemainingMinutes({}) == -1);
+    char remaining[32]{};
+    formatRemainingTime(remaining, sizeof(remaining), -1); assert(QByteArray(remaining) == "unavailable");
+    formatRemainingTime(remaining, sizeof(remaining), 0); assert(QByteArray(remaining) == "0h 0m");
+    formatRemainingTime(remaining, sizeof(remaining), 59); assert(QByteArray(remaining) == "0h 59m");
+    formatRemainingTime(remaining, sizeof(remaining), 60); assert(QByteArray(remaining) == "1h 0m");
+    formatRemainingTime(remaining, sizeof(remaining), 7210); assert(QByteArray(remaining) == "120h 10m");
+    char bounded[5] = {'x','x','x','x','x'};
+    formatRemainingTime(bounded, sizeof(bounded), 7210); assert(bounded[4] == '\0');
+    char untouched = 'x'; formatRemainingTime(&untouched, 0, 60); assert(untouched == 'x');
     s = {}; s.fps = 61;
     assert(!s.isValid());
     for (int bitrate : {45000, 50000}) {
         s = {}; s.bitrate = bitrate;
         assert(s.isValid());
-        assert(s.providerSpec() == QString("720 %1 60 10").arg(bitrate));
+        assert(s.providerSpec() == QString("1080 %1 60 10").arg(bitrate));
     }
     s = {}; s.bitrate = 1999;
     assert(!s.isValid());

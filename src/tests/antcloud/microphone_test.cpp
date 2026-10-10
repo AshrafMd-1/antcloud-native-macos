@@ -62,7 +62,7 @@ private slots:
         QTest::qWait(20); QCOMPARE(permissionRequests.load(), 0); QCOMPARE(captureStarts.load(), 0);
         mic.startSession("192.0.2.1");
         QVERIFY(mic.enabled()); QTRY_COMPARE(permissionRequests.load(), 1);
-        mic.stopSession(); QVERIFY(!mic.enabled());
+        mic.stopSession(); QVERIFY(mic.enabled()); QVERIFY(mic.status().isEmpty());
         finishPermission(true); QTest::qWait(20); QCOMPARE(captureStarts.load(), 0);
     }
     void workerResourcesAreLazyAndHealthChecksAreBounded() {
@@ -102,6 +102,21 @@ private slots:
         QTRY_VERIFY(!mic.enabled()); QVERIFY(mic.status().contains("capture unavailable"));
         QVERIFY(StreamBridge::active());
     }
+    void closedGateCanBeRetiredAndExplicitlyRestarted() {
+        Microphone mic;
+        mic.setEnabled(true); mic.startSession("192.0.2.1");
+        QTRY_COMPARE(permissionRequests.load(), 1); finishPermission(true);
+        QTRY_COMPARE(captureStarts.load(), 1);
+        StreamBridge::setMicrophoneAllowed(false);
+        QTRY_COMPARE(captureStops.load(), 1);
+        QVERIFY(mic.enabled());
+        mic.setEnabled(false);
+        StreamBridge::setMicrophoneAllowed(true);
+        mic.setEnabled(true);
+        QTRY_COMPARE(permissionRequests.load(), 2); finishPermission(true);
+        QTRY_COMPARE(captureStarts.load(), 2);
+        mic.setEnabled(false); QCOMPARE(captureStops.load(), 2);
+    }
     void stopCancelsPendingPermissionAndRetainsOnlyCurrentSession() {
         Microphone mic;
         mic.setEnabled(true); mic.startSession("192.0.2.1");
@@ -113,8 +128,8 @@ private slots:
         mic.setEnabled(false); QCOMPARE(captureStops.load(), 1);
         mic.setEnabled(true); QTRY_COMPARE(permissionRequests.load(), 3); finishPermission(true);
         QTRY_COMPARE(captureStarts.load(), 2);
-        mic.stopSession(); QCOMPARE(captureStops.load(), 2); QVERIFY(!mic.enabled());
-        mic.startSession("192.0.2.2"); QTest::qWait(20); QCOMPARE(permissionRequests.load(), 3);
+        mic.stopSession(); QCOMPARE(captureStops.load(), 2); QVERIFY(mic.enabled());
+        mic.startSession("192.0.2.2"); QTRY_COMPARE(permissionRequests.load(), 4);
     }
     void destinationValidationAndDeviceChange() {
         Microphone mic;

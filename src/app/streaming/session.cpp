@@ -1503,7 +1503,7 @@ void Session::updateOptimalWindowDisplayMode()
     SDL_SetWindowDisplayMode(m_Window, &bestMode);
 }
 
-void Session::toggleFullscreen()
+bool Session::toggleFullscreen()
 {
     bool fullScreen = !(SDL_GetWindowFlags(m_Window) & m_FullScreenFlag);
 
@@ -1542,6 +1542,8 @@ void Session::toggleFullscreen()
 
     // Input handler might need stop/stop mouse grab after changing modes
     m_InputHandler->updatePointerRegionLock();
+
+    return (SDL_GetWindowFlags(m_Window) & m_FullScreenFlag) != 0;
 }
 
 void Session::notifyMouseEmulationMode(bool enabled)

@@ -218,6 +218,7 @@ HEADERS += \
     antcloud/microphonecapture.h \
     antcloud/providerworker.h \
     antcloud/protocol.h \
+    antcloud/remainingtime.h \
     antcloud/tokenstore.h \
     antcloud/streambridge.h \
     SDL_compat.h \

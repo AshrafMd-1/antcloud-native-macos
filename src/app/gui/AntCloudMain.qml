@@ -350,9 +350,7 @@ ApplicationWindow {
                     Label {
                         objectName: "remainingTimeLabel"
                         Layout.fillWidth: true
-                        text: appWindow.controller.remainingMinutes >= 0
-                            ? "Time left: " + appWindow.controller.remainingMinutes + " minutes"
-                            : "Time left: unavailable"
+                        text: "Time left: " + appWindow.controller.remainingTime
                         wrapMode: Text.WordWrap
                     }
                     Basic.TabBar {
@@ -453,7 +451,7 @@ ApplicationWindow {
                                     Accessible.name: "Stream resolution"
                                     Layout.fillWidth: true
                                     currentIndex: appWindow.controller.resolutionIndex
-                                    model: ["720p · 1280 × 720", "1080p · 1920 × 1080", "2560 × 1440 · Experimental", "3840 × 2160 · Experimental"]
+                                    model: ["1280 × 720, 16:9", "1920 × 1080, 16:9", "2560 × 1440, 16:9", "3840 × 2160, 16:9", "2560 × 1600, 16:10", "2048 × 1280, 16:10", "1920 × 1200, 16:10", "1680 × 1050, 16:10", "1440 × 900, 16:10", "1280 × 800, 16:10", "1024 × 640, 16:10", "960 × 600, 16:10"]
                                     objectName: "resolutionPicker"
 
                                     onActivated: appWindow.controller.resolutionIndex = currentIndex
@@ -515,7 +513,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     objectName: "codecPicker"
                                     currentIndex: appWindow.controller.codecIndex
-                                    model: ["H.264 · default", "H.265 - Experimental", "AV1 - Experimental"]
+                                    model: ["H.264", "H.265 - if supported", "AV1 - if supported"]
                                     onActivated: appWindow.controller.codecIndex = currentIndex
                                 }
                             }
@@ -527,6 +525,7 @@ ApplicationWindow {
 
                             CheckBox {
                                 enabled: !appWindow.controller.busy
+                                objectName: "fullscreenCheckbox"
                                 checked: appWindow.controller.fullscreen
                                 text: "Fullscreen"
 
@@ -534,6 +533,7 @@ ApplicationWindow {
                             }
                             CheckBox {
                                 enabled: !appWindow.controller.busy
+                                objectName: "relativeMouseCheckbox"
                                 checked: appWindow.controller.relativeMouse
                                 text: "Relative mouse"
 
@@ -541,6 +541,7 @@ ApplicationWindow {
                             }
                             CheckBox {
                                 enabled: !appWindow.controller.busy
+                                objectName: "statsCheckbox"
                                 checked: appWindow.controller.showStats
                                 text: "Show stream stats"
 
@@ -1006,7 +1007,7 @@ ApplicationWindow {
                         Label { font.weight: Font.DemiBold; text: "Stream shortcuts" }
                         Label {
                             Layout.fillWidth: true
-                            text: "Hold the physical Control + Command + Shift keys, then press a key below. These work with every mapping."
+                            text: "Hold the physical Control + Command + Shift keys, then press a key below. These work with every mapping. Fullscreen, mouse mode, statistics, hint and microphone changes are saved for the next stream."
                             wrapMode: Text.WordWrap
                         }
                         ColumnLayout {
@@ -1078,7 +1079,7 @@ ApplicationWindow {
                         Label {
                             Layout.fillWidth: true
                             objectName: "microphoneHelp"
-                            text: "VM audio plays on your Mac. Enable Send microphone in Video before Connect or once connected. Allow Mac microphone access when prompted. Control + Command + Shift + B toggles it during streaming; it turns off when the stream ends."
+                            text: "VM audio plays on your Mac. Enable Send microphone in Video before Connect or once connected. Allow Mac microphone access when prompted. Control + Command + Shift + B toggles sending during streaming. Your choice is saved; capture stops when the stream ends and starts only in a connected stream."
                             wrapMode: Text.WordWrap
                         }
                     }

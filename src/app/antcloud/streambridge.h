@@ -10,6 +10,7 @@
 namespace AntCloud {
 class StreamBridge {
 public:
+    enum StreamSetting { Fullscreen, RelativeMouse, Stats, ControlsHint };
     static void install(QObject* worker) { QMutexLocker lock(&mutex()); target() = worker; enabledFlag() = worker != nullptr; if (!worker) setMicrophoneAllowed(false); }
     static bool enabled() { return enabledFlag().load(); }
     // Set before queuing Stop so provider events cannot race the local SDL exit.
@@ -46,9 +47,17 @@ public:
     static bool controlsHint() { return controlsHintFlag().load(); }
     static void setActive(bool value) { if (!value) setMicrophoneAllowed(false); activeFlag() = value; }
     static bool active() { return activeFlag().load(); }
-    static void installMicrophoneController(QObject* controller) {
-        QMutexLocker lock(&mutex()); microphoneTarget() = controller;
-        if (!controller) setMicrophoneAllowed(false);
+    static void installSettingsController(QObject* controller) {
+        QMutexLocker lock(&mutex()); settingsTarget() = controller;
+    }
+    static qulonglong beginSettingsSession() { return ++settingsGeneration(); }
+    static qulonglong settingsSessionGeneration() { return settingsGeneration().load(); }
+    static bool persistStreamSetting(StreamSetting setting, bool value) {
+        QMutexLocker lock(&mutex());
+        if (!settingsTarget() || !enabled() || !active() || expectedEnd()) return false;
+        return QMetaObject::invokeMethod(settingsTarget(), "persistStreamSetting", Qt::QueuedConnection,
+            Q_ARG(int, int(setting)), Q_ARG(bool, value),
+            Q_ARG(qulonglong, settingsGeneration().load()));
     }
     static qulonglong beginMicrophoneSession() { setMicrophoneAllowed(false); return ++microphoneGeneration(); }
     static qulonglong microphoneSessionGeneration() { return microphoneGeneration().load(); }
@@ -60,12 +69,17 @@ public:
         return stamp != 0 && stamp == microphoneSessionGeneration()
             && enabled() && active() && hostRequestsAllowed() && !expectedEnd();
     }
+    static void setMicrophonePreference(bool value) { microphonePreferenceFlag() = value; }
+    static bool microphonePreference() { return microphonePreferenceFlag().load(); }
     static bool toggleMicrophone() {
         QMutexLocker lock(&mutex());
-        if (!microphoneTarget() || !enabled() || !active() || expectedEnd() || !hostRequestsAllowed()) return false;
+        if (!settingsTarget() || !enabled() || !active() || expectedEnd() || !hostRequestsAllowed()) return false;
+        const bool enabled = !microphonePreference();
+        setMicrophonePreference(enabled);
         // Muting blocks sends immediately, before the GUI processes its queued toggle.
-        if (microphoneAllowed()) setMicrophoneAllowed(false);
-        return QMetaObject::invokeMethod(microphoneTarget(), "toggleMicrophone", Qt::QueuedConnection,
+        if (!enabled) setMicrophoneAllowed(false);
+        return QMetaObject::invokeMethod(settingsTarget(), "persistMicrophonePreference", Qt::QueuedConnection,
+            Q_ARG(bool, enabled), Q_ARG(qulonglong, settingsGeneration().load()),
             Q_ARG(qulonglong, microphoneGeneration().load()));
     }
     static void interrupt() {
@@ -74,7 +88,7 @@ public:
     }
 private:
     static QObject*& target() { static QObject* value = nullptr; return value; }
-    static QObject*& microphoneTarget() { static QObject* value = nullptr; return value; }
+    static QObject*& settingsTarget() { static QObject* value = nullptr; return value; }
     static QMutex& mutex() { static QMutex value; return value; }
     static std::atomic<bool>& enabledFlag() { static std::atomic<bool> value{false}; return value; }
     static std::atomic<int>& remainingMinutesFlag() { static std::atomic<int> value{-1}; return value; }
@@ -87,5 +101,7 @@ private:
     static std::atomic<bool>& expectedEndFlag() { static std::atomic<bool> value{false}; return value; }
     static std::atomic<qulonglong>& microphoneStamp() { static std::atomic<qulonglong> value{0}; return value; }
     static std::atomic<qulonglong>& microphoneGeneration() { static std::atomic<qulonglong> value{1}; return value; }
+    static std::atomic<qulonglong>& settingsGeneration() { static std::atomic<qulonglong> value{1}; return value; }
+    static std::atomic<bool>& microphonePreferenceFlag() { static std::atomic<bool> value{false}; return value; }
 };
 }

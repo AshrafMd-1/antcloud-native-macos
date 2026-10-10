@@ -26,19 +26,20 @@ class Controller : public QObject {
     Q_PROPERTY(QString shutdownStatus READ shutdownStatus NOTIFY changed)
     Q_PROPERTY(int elapsed READ elapsed NOTIFY elapsedChanged)
     Q_PROPERTY(int resolutionLimit READ resolutionLimit NOTIFY changed)
-    Q_PROPERTY(int resolutionIndex MEMBER m_ResolutionIndex NOTIFY settingsChanged)
-    Q_PROPERTY(int fpsIndex MEMBER m_FpsIndex NOTIFY settingsChanged)
-    Q_PROPERTY(int bitrate MEMBER m_Bitrate NOTIFY settingsChanged)
+    Q_PROPERTY(int resolutionIndex READ resolutionIndex WRITE setResolutionIndex NOTIFY settingsChanged)
+    Q_PROPERTY(int fpsIndex READ fpsIndex WRITE setFpsIndex NOTIFY settingsChanged)
+    Q_PROPERTY(int bitrate READ bitrate WRITE setBitrate NOTIFY settingsChanged)
     Q_PROPERTY(QVariantList bitrateChoices READ bitrateChoices CONSTANT)
-    Q_PROPERTY(int codecIndex MEMBER m_CodecIndex NOTIFY settingsChanged)
+    Q_PROPERTY(int codecIndex READ codecIndex WRITE setCodecIndex NOTIFY settingsChanged)
     Q_PROPERTY(int remainingMinutes READ remainingMinutes NOTIFY changed)
+    Q_PROPERTY(QString remainingTime READ remainingTime NOTIFY changed)
     Q_PROPERTY(int commandModifier READ commandModifier NOTIFY settingsChanged)
     Q_PROPERTY(int optionModifier READ optionModifier NOTIFY settingsChanged)
     Q_PROPERTY(int controlModifier READ controlModifier NOTIFY settingsChanged)
-    Q_PROPERTY(bool fullscreen MEMBER m_Fullscreen NOTIFY settingsChanged)
-    Q_PROPERTY(bool relativeMouse MEMBER m_RelativeMouse NOTIFY settingsChanged)
-    Q_PROPERTY(bool showStats MEMBER m_ShowStats NOTIFY settingsChanged)
-    Q_PROPERTY(bool showControlsHint MEMBER m_ShowControlsHint NOTIFY settingsChanged)
+    Q_PROPERTY(bool fullscreen READ fullscreen WRITE setFullscreen NOTIFY settingsChanged)
+    Q_PROPERTY(bool relativeMouse READ relativeMouse WRITE setRelativeMouse NOTIFY settingsChanged)
+    Q_PROPERTY(bool showStats READ showStats WRITE setShowStats NOTIFY settingsChanged)
+    Q_PROPERTY(bool showControlsHint READ showControlsHint WRITE setShowControlsHint NOTIFY settingsChanged)
     Q_PROPERTY(bool microphoneEnabled READ microphoneEnabled NOTIFY changed)
     Q_PROPERTY(QString microphoneStatus READ microphoneStatus NOTIFY changed)
 public:
@@ -56,13 +57,32 @@ public:
     int elapsed() const { return m_Clock.isValid() ? int(m_Clock.elapsed() / 1000) : 0; }
     int resolutionLimit() const { return m_Limit; }
     int remainingMinutes() const { return m_RemainingMinutes; }
+    QString remainingTime() const;
+    int resolutionIndex() const { return m_ResolutionIndex; }
+    int fpsIndex() const { return m_FpsIndex; }
+    int bitrate() const { return m_Bitrate; }
+    int codecIndex() const { return m_CodecIndex; }
+    bool fullscreen() const { return m_Fullscreen; }
+    bool relativeMouse() const { return m_RelativeMouse; }
+    bool showStats() const { return m_ShowStats; }
+    bool showControlsHint() const { return m_ShowControlsHint; }
     int commandModifier() const { return m_Modifiers.target(0); }
     int optionModifier() const { return m_Modifiers.target(1); }
     int controlModifier() const { return m_Modifiers.target(2); }
     bool microphoneEnabled() const;
     QString microphoneStatus() const;
     Q_INVOKABLE void setMicrophoneEnabled(bool enabled);
-    Q_INVOKABLE void toggleMicrophone(qulonglong generation);
+    Q_INVOKABLE void persistMicrophonePreference(bool enabled, qulonglong settingsGeneration,
+                                                 qulonglong microphoneGeneration);
+    Q_INVOKABLE void persistStreamSetting(int setting, bool value, qulonglong generation);
+    void setResolutionIndex(int value);
+    void setFpsIndex(int value);
+    void setBitrate(int value);
+    void setCodecIndex(int value);
+    void setFullscreen(bool value);
+    void setRelativeMouse(bool value);
+    void setShowStats(bool value);
+    void setShowControlsHint(bool value);
     Q_INVOKABLE void setModifierMapping(int row, int target);
     QVariantList bitrateChoices() const {
         QVariantList values;
@@ -77,6 +97,9 @@ public:
     Q_INVOKABLE void shutdown();
     Q_INVOKABLE void exportDiagnostics(QUrl file);
     Q_INVOKABLE void clearDiagnostics();
+#ifdef ANTCLOUD_TESTING
+    void beginSettingsSessionForTest();
+#endif
 signals:
     void changed();
     void settingsChanged();
@@ -94,6 +117,7 @@ private:
     Microphone* m_Microphone;
     QString m_MicrophoneHost;
     qulonglong m_MicrophoneGeneration = 0;
+    qulonglong m_SettingsGeneration = 0;
     ComputerManager* m_Manager = nullptr;
     QPointer<ComputerSeeker> m_Seeker;
     QPointer<Session> m_Session;
@@ -102,7 +126,8 @@ private:
     NvComputer* m_Computer = nullptr;
     bool m_SignedIn = false, m_Active = false, m_ProviderActive = false, m_Pairing = false, m_Polling = false;
     bool m_Fullscreen = true, m_RelativeMouse = true, m_ShowStats = true, m_ShowControlsHint = true;
-    int m_Limit = 0, m_ResolutionIndex = DefaultResolutionIndex, m_FpsIndex = 1, m_Bitrate = 6000, m_CodecIndex = 0, m_RemainingMinutes = -1;
+    int m_Limit = 0, m_ResolutionIndex = DefaultResolutionIndex, m_FpsIndex = 1, m_Bitrate = 10000, m_CodecIndex = 0, m_RemainingMinutes = -1;
+    bool m_MicrophonePreference = false;
     ModifierMapping m_Modifiers;
     QString m_Phase = "idle", m_Detail = "Sign in to connect to your Windows VM.", m_Error, m_Notice, m_StreamWarning, m_ShutdownStatus;
     QStringList m_Diagnostics;

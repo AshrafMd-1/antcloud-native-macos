@@ -63,13 +63,15 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         bool enabled = !AntCloud::StreamBridge::controlsHint();
         AntCloud::StreamBridge::setControlsHint(enabled);
         Session::get()->getOverlayManager().setControlsHint(enabled);
+        AntCloud::StreamBridge::persistStreamSetting(AntCloud::StreamBridge::ControlsHint, enabled);
         break;
     }
 
     case KeyComboToggleFullScreen:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected full-screen toggle combo");
-        Session::s_ActiveSession->toggleFullscreen();
+        AntCloud::StreamBridge::persistStreamSetting(AntCloud::StreamBridge::Fullscreen,
+                                                     Session::s_ActiveSession->toggleFullscreen());
 
         // Force raise all keys just be safe across this full-screen/windowed
         // transition just in case key events get lost.
@@ -81,8 +83,11 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
                     "Detected stats toggle combo");
 
         // Toggle the stats overlay
-        Session::get()->getOverlayManager().setOverlayState(Overlay::OverlayDebug,
-                                                            !Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug));
+        {
+            bool enabled = !Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug);
+            Session::get()->getOverlayManager().setOverlayState(Overlay::OverlayDebug, enabled);
+            AntCloud::StreamBridge::persistStreamSetting(AntCloud::StreamBridge::Stats, enabled);
+        }
         break;
 
     case KeyComboToggleMouseMode:
@@ -94,6 +99,8 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
 
         // Toggle mouse mode
         m_AbsoluteMouseMode = !m_AbsoluteMouseMode;
+        AntCloud::StreamBridge::persistStreamSetting(AntCloud::StreamBridge::RelativeMouse,
+                                                     !m_AbsoluteMouseMode);
 
         // Recapture input
         setCaptureActive(true);

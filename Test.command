@@ -20,10 +20,19 @@ antcloud_run_test() {
     "$@"
   fi
 }
-for antcloud_test in protocol input_stats tests controls seeker bandwidth microphone; do
+for antcloud_test in protocol input_stats tests controls seeker bandwidth microphone settings; do
   antcloud_folder="$antcloud_root/build/test-$antcloud_test"
+  antcloud_project="$antcloud_root/src/tests/antcloud/$antcloud_test.pro"
+  if [[ "$antcloud_test" == settings ]]; then
+    antcloud_project="$antcloud_root/src/app/settings_test.pro"
+    for antcloud_dependency in moonlight-common-c qmdnsengine h264bitstream; do
+      antcloud_dependency_folder="$antcloud_root/build/$antcloud_dependency"
+      mkdir -p "$antcloud_dependency_folder"
+      (cd "$antcloud_dependency_folder" && "$antcloud_qmake" "$antcloud_root/src/$antcloud_dependency/$antcloud_dependency.pro" "${antcloud_qmake_args[@]}" && make -j3)
+    done
+  fi
   mkdir -p "$antcloud_folder"
-  (cd "$antcloud_folder" && "$antcloud_qmake" "$antcloud_root/src/tests/antcloud/$antcloud_test.pro" "${antcloud_qmake_args[@]}" && make -j3 && SDL_VIDEODRIVER=dummy antcloud_run_test "./$antcloud_test")
+  (cd "$antcloud_folder" && "$antcloud_qmake" "$antcloud_project" "${antcloud_qmake_args[@]}" && make -j3 && SDL_VIDEODRIVER=dummy antcloud_run_test "./$antcloud_test")
 done
 if [[ "${1:-}" != --core-only ]]; then
   mkdir -p build/test-ui

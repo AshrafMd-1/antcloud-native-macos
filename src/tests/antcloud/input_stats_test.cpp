@@ -86,19 +86,21 @@ int main()
     assert(AntCloudInput::isMacLocalChord(event.keysym.mod));
 
     char text[200];
-    AntCloudStats::format({32, 120, 3, 58.5, 5.8, 1440, 900}, text, sizeof(text));
-    assert(std::string(text) == "RTT 32 ms | Loss 2.5% | 58.5 FPS | 5.8 Mbps | 1440x900\nTime left N/A");
-    AntCloudStats::format({0, 0, 0, 0, 0, 1280, 720}, text, sizeof(text));
+    AntCloudStats::format({32, 120, 3, 58.5, 5.8}, text, sizeof(text));
+    assert(std::string(text) == "RTT 32 ms | Loss 2.5% | 58.5 FPS | 5.8 Mbps | Time left unavailable");
+    AntCloudStats::format({0, 0, 0, 0, 0}, text, sizeof(text));
     assert(std::string(text).find("RTT N/A | Loss N/A") == 0);
     assert(std::string(text).find("N/A FPS | N/A") != std::string::npos);
-    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080, 750}, text, sizeof(text));
-    assert(std::string(text).find("\nTime left 750 min") != std::string::npos);
-    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080, 0}, text, sizeof(text));
-    assert(std::string(text).find("\nTime left 0 min") != std::string::npos);
+    AntCloudStats::format({32, 120, 0, 60, 6, 750}, text, sizeof(text));
+    assert(std::string(text).find(" | Time left 12h 30m") != std::string::npos);
+    AntCloudStats::format({32, 120, 0, 60, 6, 0}, text, sizeof(text));
+    assert(std::string(text).find(" | Time left 0h 0m") != std::string::npos);
+    assert(std::string(text).find("\n") == std::string::npos);
+    assert(std::string(text).find("1920") == std::string::npos);
     char tiny[5] = {};
-    AntCloudStats::format({32, 120, 0, 60, 6, 1920, 1080}, tiny, sizeof(tiny));
+    AntCloudStats::format({32, 120, 0, 60, 6}, tiny, sizeof(tiny));
     assert(tiny[4] == '\0');
     AntCloudStats::format({0, 1, 0, std::numeric_limits<double>::quiet_NaN(),
-        std::numeric_limits<double>::infinity(), 1280, 720}, text, sizeof(text));
+        std::numeric_limits<double>::infinity()}, text, sizeof(text));
     assert(std::string(text).find("N/A FPS | N/A") != std::string::npos);
 }

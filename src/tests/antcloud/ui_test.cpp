@@ -10,6 +10,7 @@
 #include <QDir>
 #include <cmath>
 #include "antcloud/modifiermapping.h"
+#include "antcloud/remainingtime.h"
 // UI fixtures never contact AntCloud and are not linked into the app.
 class UiController : public QObject {
     Q_OBJECT
@@ -36,10 +37,12 @@ class UiController : public QObject {
     Q_PROPERTY(QVariantList bitrateChoices READ bitrateChoices CONSTANT)
     Q_PROPERTY(int codecIndex MEMBER codecIndex NOTIFY changed)
     Q_PROPERTY(int remainingMinutes MEMBER remainingMinutes NOTIFY changed)
+    Q_PROPERTY(QString remainingTime READ remainingTime NOTIFY changed)
     Q_PROPERTY(int commandModifier READ commandModifier NOTIFY changed)
     Q_PROPERTY(int optionModifier READ optionModifier NOTIFY changed)
     Q_PROPERTY(int controlModifier READ controlModifier NOTIFY changed)
 public:
+    QString remainingTime() const { char text[48]; AntCloud::formatRemainingTime(text,sizeof(text),remainingMinutes); return QString::fromLatin1(text); }
     AntCloud::ModifierMapping modifiers;
     int commandModifier() const { return modifiers.target(0); }
     int optionModifier() const { return modifiers.target(1); }
@@ -56,16 +59,16 @@ public:
         microphoneEnabled=enabled; microphoneStatus=enabled?QString():QString("Microphone off"); emit changed();
     }
     QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice, streamWarning, shutdownStatus;
-    int elapsed=83, resolutionLimit=1080, resolutionIndex=1, fpsIndex=1, bitrate=6000, loginCalls=0, shutdownCalls=0;
+    int elapsed=83, resolutionLimit=1080, resolutionIndex=1, fpsIndex=1, bitrate=10000, loginCalls=0, shutdownCalls=0;
     Q_INVOKABLE void initialize(QQuickWindow*) {}
     Q_INVOKABLE void login(QString, QString, bool) { ++loginCalls; signedIn=true; detail="Your Windows VM is ready to connect."; emit changed(); }
     Q_INVOKABLE void signOut() { signedIn=false; emit changed(); }
     Q_INVOKABLE void start() { active=busy=true; phase="booting"; detail="Waiting for the VM to boot. This can take a minute or two."; emit changed(); }
-    Q_INVOKABLE void disconnectStream() { active=busy=false; microphoneEnabled=false; microphoneStatus="Microphone off"; phase="idle"; emit changed(); }
+    Q_INVOKABLE void disconnectStream() { active=busy=false; microphoneStatus="Microphone off"; phase="idle"; emit changed(); }
     Q_INVOKABLE void shutdown() { ++shutdownCalls; disconnectStream(); }
     Q_INVOKABLE void exportDiagnostics(QUrl) {}
     Q_INVOKABLE void clearDiagnostics() {}
-    void reset() { showControlsHint=true; signedIn=busy=active=microphoneEnabled=false; microphoneStatus="Microphone off"; resolutionIndex=1; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); streamWarning.clear(); shutdownStatus.clear(); loginCalls=shutdownCalls=0; bitrate=6000; fpsIndex=1; codecIndex=0; remainingMinutes=-1; modifiers=AntCloud::ModifierMapping{}; emit changed(); }
+    void reset() { fullscreen=relativeMouse=showStats=showControlsHint=true; signedIn=busy=active=microphoneEnabled=false; microphoneStatus="Microphone off"; resolutionLimit=1080; resolutionIndex=1; phase="idle"; detail="Sign in to connect to your Windows VM."; error.clear(); notice.clear(); streamWarning.clear(); shutdownStatus.clear(); loginCalls=shutdownCalls=0; bitrate=10000; fpsIndex=1; codecIndex=0; remainingMinutes=-1; modifiers=AntCloud::ModifierMapping{}; emit changed(); }
 signals:
     void changed();
 };
@@ -118,6 +121,14 @@ private slots:
         auto tabs=window->findChild<QObject*>("settingsTabs");
         if(tabs) tabs->setProperty("currentIndex",0);
         controller.reset(); window->setWidth(860); window->setHeight(740); window->show(); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window)); }
+    void freshVideoDefaults() {
+        controller.signedIn=true; emit controller.changed();
+        const char* names[]={"resolutionPicker","frameRatePicker","bitratePicker","codecPicker"};
+        const QString expected[]={"1920 × 1080, 16:9","60 FPS","10 Mbps","H.264"};
+        for(int i=0;i<4;++i) { auto picker=window->findChild<QObject*>(names[i]); QVERIFY(picker); QTRY_COMPARE(picker->property("currentText").toString(),expected[i]); }
+        for(const char* name : {"fullscreenCheckbox","relativeMouseCheckbox","statsCheckbox","controlsHintCheckbox"}) { auto item=window->findChild<QObject*>(name); QVERIFY(item); QVERIFY(item->property("checked").toBool()); }
+        QVERIFY(!window->findChild<QObject*>("microphoneCheckbox")->property("checked").toBool());
+    }
     void settingsTabsPreserveChoicesAndBusyGuards() {
         controller.signedIn=true; emit controller.changed();
         auto tabs=window->findChild<QObject*>("settingsTabs");
@@ -166,7 +177,7 @@ private slots:
         QTRY_VERIFY(!privacy->property("visible").toBool());
         QTRY_VERIFY(!status->property("visible").toBool());
         controller.setMicrophoneEnabled(true); controller.disconnectStream();
-        QTRY_VERIFY(!checkbox->property("checked").toBool());
+        QTRY_VERIFY(checkbox->property("checked").toBool());
         auto help=window->findChild<QObject*>("microphoneHelp"); QVERIFY(help);
         QVERIFY(help->property("text").toString().contains("Control + Command + Shift + B"));
         QVERIFY(!help->property("text").toString().contains("unverified"));
@@ -333,7 +344,7 @@ private slots:
         auto codec=window->findChild<QObject*>("codecPicker"); QVERIFY(codec);
         QTRY_COMPARE(codec->property("currentIndex").toInt(),1);
         QCOMPARE(codec->property("count").toInt(),3);
-        QTRY_COMPARE(codec->property("currentText").toString(),QString("H.265 - Experimental"));
+        QTRY_COMPARE(codec->property("currentText").toString(),QString("H.265 - if supported"));
         auto bitrate=window->findChild<QObject*>("bitratePicker"); QVERIFY(bitrate);
         QCOMPARE(bitrate->property("count").toInt(),15);
         QTRY_COMPARE(bitrate->property("currentText").toString(),QString("25 Mbps"));
@@ -345,24 +356,25 @@ private slots:
             QCOMPARE(bitrate->property("currentText").toString(),QString("%1 Mbps").arg(expected/1000));
         }
         auto remaining=window->findChild<QObject*>("remainingTimeLabel"); QVERIFY(remaining);
-        QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: 750 minutes"));
+        QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: 12h 30m"));
         controller.remainingMinutes=-1; emit controller.changed();
         QTRY_COMPARE(remaining->property("text").toString(),QString("Time left: unavailable"));
         codec->setProperty("currentIndex",2);
         QVERIFY(QMetaObject::invokeMethod(codec,"activated",Q_ARG(int,2)));
         QCOMPARE(controller.codecIndex,2);
-        QCOMPARE(codec->property("currentText").toString(),QString("AV1 - Experimental"));
+        QCOMPARE(codec->property("currentText").toString(),QString("AV1 - if supported"));
     }
     void retiredResolutionAndPowerStatus() {
         controller.signedIn=true; controller.detail="Disconnected.";
         controller.shutdownStatus="Shutdown requested. Check the dashboard for the final power state.";
         emit controller.changed();
         auto picker=window->findChild<QObject*>("resolutionPicker"); QVERIFY(picker);
-        QCOMPARE(picker->property("count").toInt(),4);
-        for (int index=0; index<4; ++index) {
+        const QStringList labels={"1280 × 720, 16:9", "1920 × 1080, 16:9", "2560 × 1440, 16:9", "3840 × 2160, 16:9", "2560 × 1600, 16:10", "2048 × 1280, 16:10", "1920 × 1200, 16:10", "1680 × 1050, 16:10", "1440 × 900, 16:10", "1280 × 800, 16:10", "1024 × 640, 16:10", "960 × 600, 16:10"};
+        QCOMPARE(picker->property("count").toInt(),labels.size());
+        for (int index=0; index<labels.size(); ++index) {
             QString label;
             QVERIFY(QMetaObject::invokeMethod(picker, "textAt", Q_RETURN_ARG(QString,label), Q_ARG(int,index)));
-            QCOMPARE(label.contains("Experimental"), index >= 2);
+            QCOMPARE(label,labels[index]);
         }
         auto power=window->findChild<QQuickItem*>("powerStatusSection"); QVERIFY(power);
         QTRY_VERIFY(power->isVisible());
@@ -411,6 +423,8 @@ private slots:
         QTest::newRow("microphone-600-light") << 600 << false << "microphone";
         QTest::newRow("microphone-860-dark") << 860 << true << "microphone";
         QTest::newRow("ready-860-light") << 860 << false << "ready";
+        QTest::newRow("readme-video") << 860 << false << "readme-video";
+        QTest::newRow("readme-keyboard") << 860 << false << "readme-keyboard";
         QTest::newRow("experimental-600-light") << 600 << false << "experimental";
         QTest::newRow("experimental-860-dark") << 860 << true << "experimental";
         QTest::newRow("4k-600-light") << 600 << false << "4k";
@@ -431,6 +445,8 @@ private slots:
         if(state=="av1") controller.codecIndex=2;
         if(state=="quota") controller.remainingMinutes=750;
         if(state=="microphone") controller.setMicrophoneEnabled(true);
+        if(state.startsWith("readme-")) { controller.remainingMinutes=7210; controller.resolutionLimit=2160; }
+        if(state=="readme-keyboard") window->findChild<QObject*>("settingsTabs")->setProperty("currentIndex",1);
         if(state=="mapping") {
             controller.modifiers.assign(0,3); controller.modifiers.assign(2,0);
             window->findChild<QObject*>("settingsTabs")->setProperty("currentIndex",1);

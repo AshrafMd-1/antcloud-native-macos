@@ -2132,8 +2132,6 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
             AntCloudStats::format({lastTwoWndStats.lastRtt, lastTwoWndStats.totalFrames,
                                    lastTwoWndStats.networkDroppedFrames, lastTwoWndStats.receivedFps,
                                    m_BwTracker.GetAverageMbps(),
-                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
-                                   m_VideoDecoderCtx ? m_VideoDecoderCtx->height : m_OriginalVideoHeight,
                                    AntCloud::StreamBridge::remainingMinutes()},
                                  Session::get()->getOverlayManager().getOverlayText(Overlay::OverlayDebug),
                                  Session::get()->getOverlayManager().getOverlayMaxTextLength());
