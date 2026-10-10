@@ -84,7 +84,7 @@ Windows audio plays on your Mac. Microphone sending uses AntCloud's Android-comp
 
 The option is **off by default**. Enable **Send microphone** in **Video** before Connect or once connected; **Control+Command+Shift+B** also toggles it during a connected stream. macOS microphone permission is requested only when enabled in a connected session. Capture stops and the option returns to off when the session ends, so enable it again for another session.
 
-Microphone status describes local capture and sending. Select the provider's recording endpoint in Windows Sound/input settings to use it in games, calls or recording software.
+Microphone status appears for permission, capture, sending or errors; selecting the checkbox before connecting shows no extra status line. Select the provider's recording endpoint in Windows Sound/input settings to use it in games, calls or recording software.
 
 Microphone audio is **unencrypted**; enable it only on a trusted network. The app shows this notice while the option is enabled. Disabled microphone input runs no capture worker, timer or socket. It is independent of the video connection and stops on mute, stream failure, Stop, accepted Shutdown or quit.
 

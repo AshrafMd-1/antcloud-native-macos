@@ -35,7 +35,7 @@ For connection testing, use **720p / 60 FPS / 6 Mbps / H.264**. Bitrate choices 
 
 Windows audio plays on your Mac automatically. To send your Mac microphone, enable **Send microphone** in **Video** before Connect or once connected. **Control+Command+Shift+B** also toggles it during a connected stream. Allow macOS microphone access when prompted. Capture starts only in a connected session; ending the session stops capture and resets the option to off.
 
-Microphone audio is **unencrypted**; enable it only on a trusted network. The notice appears while enabled. In the VM, select the provider’s recording endpoint in Windows Sound/input settings. Disabled microphone input runs no capture worker or send loop; see [README.md](README.md#audio-and-microphone) for details.
+Microphone audio is **unencrypted**; enable it only on a trusted network. The notice appears while enabled. Selecting the checkbox before Connect shows no extra status line; permission, capture, sending and error feedback appears when needed. In the VM, select the provider’s recording endpoint in Windows Sound/input settings. Disabled microphone input runs no capture worker or send loop; see [README.md](README.md#audio-and-microphone) for details.
 
 ## Build from source
 

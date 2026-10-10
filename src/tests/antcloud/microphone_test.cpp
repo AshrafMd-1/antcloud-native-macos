@@ -58,6 +58,7 @@ private slots:
         Microphone mic;
         QVERIFY(!mic.enabled()); QCOMPARE(mic.status(), QString("Microphone off"));
         mic.setEnabled(true);
+        QVERIFY(mic.status().isEmpty());
         QTest::qWait(20); QCOMPARE(permissionRequests.load(), 0); QCOMPARE(captureStarts.load(), 0);
         mic.startSession("192.0.2.1");
         QVERIFY(mic.enabled()); QTRY_COMPARE(permissionRequests.load(), 1);

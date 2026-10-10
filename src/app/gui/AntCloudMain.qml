@@ -567,7 +567,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             objectName: "microphoneStatusLabel"
                             text: appWindow.controller.microphoneStatus
-                            visible: appWindow.controller.microphoneEnabled || appWindow.controller.microphoneStatus !== "Microphone off"
+                            visible: text.length > 0 && text !== "Microphone off"
                             wrapMode: Text.WordWrap
                         }
                         Label {

@@ -174,7 +174,7 @@ void Microphone::setEnabled(bool value) {
     if (d->enabled == value) return;
     d->enabled = value;
     if (value) {
-        d->status = "Microphone selected · starts with the stream"; d->begin();
+        d->status.clear(); d->begin();
     } else { d->stopWorker(); d->status = "Microphone off"; }
     emit changed();
 }

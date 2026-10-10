@@ -53,7 +53,7 @@ public:
     QString microphoneStatus="Microphone off";
     Q_INVOKABLE void setMicrophoneEnabled(bool enabled) {
         if(busy && phase!="connected") return;
-        microphoneEnabled=enabled; microphoneStatus=enabled?"Microphone selected · starts after connection":"Microphone off"; emit changed();
+        microphoneEnabled=enabled; microphoneStatus=enabled?QString():QString("Microphone off"); emit changed();
     }
     QString phase="idle", detail="Sign in to connect to your Windows VM.", error, notice, streamWarning, shutdownStatus;
     int elapsed=83, resolutionLimit=1080, resolutionIndex=1, fpsIndex=1, bitrate=6000, loginCalls=0, shutdownCalls=0;
@@ -147,6 +147,7 @@ private slots:
         controller.signedIn=true; emit controller.changed();
         auto checkbox=window->findChild<QQuickItem*>("microphoneCheckbox"); QVERIFY(checkbox);
         auto privacy=window->findChild<QObject*>("microphonePrivacyNote"); QVERIFY(privacy);
+        auto status=window->findChild<QObject*>("microphoneStatusLabel"); QVERIFY(status);
         QTRY_VERIFY(checkbox->isVisible() && checkbox->isEnabled());
         QVERIFY(!checkbox->property("checked").toBool());
         QVERIFY(!checkbox->property("text").toString().contains("Experimental"));
@@ -155,11 +156,15 @@ private slots:
         checkbox->forceActiveFocus(); QTest::keyClick(window,Qt::Key_Space);
         QTRY_VERIFY(controller.microphoneEnabled);
         QTRY_VERIFY(privacy->property("visible").toBool());
+        QTRY_VERIFY(!status->property("visible").toBool());
+        controller.microphoneStatus="Sending microphone"; emit controller.changed();
+        QTRY_VERIFY(status->property("visible").toBool());
         controller.start(); QTRY_VERIFY(!checkbox->isEnabled());
         controller.phase="connected"; emit controller.changed(); QTRY_VERIFY(checkbox->isEnabled());
         checkbox->forceActiveFocus(); QTest::keyClick(window,Qt::Key_Space);
         QTRY_VERIFY(!controller.microphoneEnabled);
         QTRY_VERIFY(!privacy->property("visible").toBool());
+        QTRY_VERIFY(!status->property("visible").toBool());
         controller.setMicrophoneEnabled(true); controller.disconnectStream();
         QTRY_VERIFY(!checkbox->property("checked").toBool());
         auto help=window->findChild<QObject*>("microphoneHelp"); QVERIFY(help);

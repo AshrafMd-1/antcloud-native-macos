@@ -75,6 +75,8 @@ Use AVAudioEngine capture independently of the Moonlight SDL playback subsystem,
 
 Mute/Stop/accepted Shutdown/provider failure/app closing immediately close the atomic send gate before queued teardown. Stop capture, join the worker, clear audio and destination, and invalidate late permission/capture callbacks on every teardown. Never retain audio or log raw samples/addresses/errors. Keep permission/capture/send state distinct from host delivery. While disabled, show no unencrypted-channel notice; show the short trusted-network notice only when enabled. Disabled input constructs no worker thread and runs no capture/socket/timer. Active pumping is 10 ms; health checks are bounded to 250 ms. Copy only populated callback samples and reuse consumer buffers. The app's usage description must survive deployment; future hardened-runtime or sandbox signing needs the corresponding audio/network entitlements. No host installation or firewall changes are part of this client feature.
 
+Selecting microphone before a connection shows no selection-status row. Keep an empty pending status hidden without reserving layout space; retain permission, capture, send and failure feedback and the enabled-only network notice.
+
 ### Settings
 
 Standard presets are 1280×720 and 1920×1080; experimental presets are 2560×1440 and 3840×2160. Display experimental dimensions explicitly and enforce account limits. Fresh/invalid settings select 1080p, without a default label; retain explicit saved 720p. Changes apply to the next connection. The engine’s 4K→1080 fallback applies only to legacy NVIDIA hosts; preserve non-NVIDIA requests. Actual fallback sets Session legacy4KFallback and yields a fixed safe GUI advisory. Account allowance does not prove VM encoder/display support; keep SOPS/game optimization behavior unchanged.
@@ -155,7 +157,7 @@ Local builds are ad-hoc signed. Developer ID signing, notarization and publicati
 
 Version 1.0.8 passed the full Mac fixture suite: six SDK checks, standalone protocol/input assertions, and 127 Qt test rows (provider 47, controls 6, seeker 18, bandwidth 5, microphone 13 and UI 38), with no failures. Coverage includes retired host polls during immediate reconnect, stale Session callbacks, pairing dispatch, renewal/rotation and strict token/PIN boundaries. QML lint, command-script syntax, Python syntax, guide links/anchors and whitespace checks passed.
 
-Actual fixture screenshots were inspected for compact/wide light/dark Video and Keyboard tabs, microphone notices off/on, scrollable help with its reachable Close button, and the SDL action panel and controls hint. Independent correctness/security and architecture reviews found no unresolved blockers.
+Actual fixture screenshots were inspected for compact/wide light/dark Video and Keyboard tabs, microphone notices off/on, scrollable help with its reachable Close button, and the SDL action panel and controls hint. The pending microphone selection row is absent, including when selected; permission/capture/send/error feedback remains covered. Independent correctness/security and architecture reviews found no unresolved blockers, including a fresh review of the microphone status change.
 
 The full Apple Silicon build passed deployment, CLI help/version, both bundle version fields, microphone usage-description and strict deep ad-hoc signature checks. It targets macOS 26.0 and uses Qt 6.11.2. The installed macOS 27 SDK produces Qt's SDK compatibility warning; build success does not establish hardware performance or compatibility beyond this target.
 
