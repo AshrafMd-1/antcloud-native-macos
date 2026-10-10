@@ -53,6 +53,12 @@ public:
     bool
     wake() const;
 
+    bool supports4K() const
+    {
+        // GFE's legacy version restriction does not describe third-party hosts.
+        return !isNvidiaServerSoftware || (!gfeVersion.isEmpty() && !gfeVersion.startsWith("2."));
+    }
+
     enum ReachabilityType
     {
         RI_UNKNOWN,

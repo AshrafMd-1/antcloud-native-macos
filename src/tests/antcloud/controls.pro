@@ -2,7 +2,7 @@ QT += core testlib
 CONFIG += console testcase c++17
 CONFIG -= app_bundle
 INCLUDEPATH += ../../app ../../app/streaming/input
-SOURCES += controls_test.cpp
+SOURCES += controls_test.cpp ../../app/streaming/video/overlaymanager.cpp
 unix:!macx {
     CONFIG += link_pkgconfig
     PKGCONFIG += sdl2 SDL2_ttf

@@ -10,6 +10,7 @@
 #include <QThreadPool>
 #include <QCoreApplication>
 #include <QRandomGenerator>
+#include <QPointer>
 
 #define SER_HOSTS "hosts"
 #define SER_HOSTS_BACKUP "hostsbackup"
@@ -22,13 +23,20 @@ class PcMonitorThread : public QThread
 #define POLLS_PER_APPLIST_FETCH 10
 
 public:
-    PcMonitorThread(NvComputer* computer)
-        : m_Computer(computer)
+    PcMonitorThread(ComputerManager* manager, NvComputer* computer)
+        : m_Manager(manager), m_Computer(computer)
     {
         setObjectName("Polling thread for " + computer->name);
     }
 
 private:
+    // Caller holds the manager lock, also used to retire/restart monitor threads.
+    bool isCurrentMonitor() const
+    {
+        const auto entry = m_Manager->m_PollEntries.value(m_Computer->uuid);
+        return entry && entry->isActiveThread(this) && !isInterruptionRequested();
+    }
+
     bool tryPollComputer(QNetworkAccessManager* nam, NvAddress address, bool& changed)
     {
         NvHTTP http(address, 0, m_Computer->serverCert, !m_Computer->isNvidiaServerSoftware, nam);
@@ -48,6 +56,10 @@ private:
             return false;
         }
 
+        // A pre-Stop response must not replace a newer reconnect's launch/resume
+        // state. Retirement and the complete update share this existing lock.
+        QReadLocker managerLock(&m_Manager->m_Lock);
+        if (!isCurrentMonitor()) return false;
         changed = m_Computer->update(newState);
         return true;
     }
@@ -67,6 +79,8 @@ private:
             return false;
         }
 
+        QReadLocker managerLock(&m_Manager->m_Lock);
+        if (!isCurrentMonitor()) return false;
         QWriteLocker lock(&m_Computer->lock);
         changed = m_Computer->updateAppList(appList);
         return true;
@@ -111,13 +125,15 @@ private:
                 }
             }
 
-            // Check if we failed after all retry attempts
-            // Note: we don't need to acquire the read lock here,
-            // because we're on the writing thread.
-            if (!online && m_Computer->state != NvComputer::CS_OFFLINE) {
-                qInfo() << m_Computer->name << "is now offline";
-                m_Computer->state = NvComputer::CS_OFFLINE;
-                stateChanged = true;
+            {
+                QReadLocker managerLock(&m_Manager->m_Lock);
+                if (!isCurrentMonitor()) return;
+                QWriteLocker computerLock(&m_Computer->lock);
+                if (!online && m_Computer->state != NvComputer::CS_OFFLINE) {
+                    qInfo() << m_Computer->name << "is now offline";
+                    m_Computer->state = NvComputer::CS_OFFLINE;
+                    stateChanged = true;
+                }
             }
 
             // Discovery needs a fresh response even when cached host metadata is unchanged.
@@ -159,6 +175,7 @@ signals:
    void computerStateChanged(NvComputer* computer);
 
 private:
+    ComputerManager* m_Manager;
     NvComputer* m_Computer;
 };
 
@@ -239,10 +256,13 @@ ComputerManager::~ComputerManager()
         entry->interrupt();
     }
 
-    // Delete all polling entries (and associated threads)
-    for (ComputerPollingEntry* entry : std::as_const(m_PollEntries)) {
-        delete entry;
-    }
+    // Retiring threads must acquire the manager lock to reject an in-flight
+    // result. Do not hold that lock while joining them.
+    const auto pollingEntries = m_PollEntries;
+    m_PollEntries.clear();
+    lock.unlock();
+    for (ComputerPollingEntry* entry : pollingEntries) delete entry;
+    lock.relock();
 
     // Destroy all NvComputer objects now that polling is halted
     for (NvComputer* computer : std::as_const(m_KnownHosts)) {
@@ -413,14 +433,29 @@ void ComputerManager::startPollingComputer(NvComputer* computer)
     }
 
     if (!pollingEntry->isActive()) {
-        PcMonitorThread* thread = new PcMonitorThread(computer);
-        connect(thread, &PcMonitorThread::computerStateChanged,
-                this, &ComputerManager::handleComputerStateChanged);
-        connect(thread, &PcMonitorThread::computerPolled,
-                this, &ComputerManager::computerPolled);
+        PcMonitorThread* thread = new PcMonitorThread(this, computer);
+        const QPointer<PcMonitorThread> monitor(thread);
+        const QString uuid = computer->uuid;
+        connect(thread, &PcMonitorThread::computerStateChanged, this,
+                [this, monitor, uuid](NvComputer* polled) {
+                    if (monitor && isCurrentPollingThread(uuid, polled, monitor))
+                        handleComputerStateChanged(polled);
+                });
+        connect(thread, &PcMonitorThread::computerPolled, this,
+                [this, monitor, uuid](NvComputer* polled) {
+                    if (monitor && isCurrentPollingThread(uuid, polled, monitor)) emit computerPolled(polled);
+                });
         pollingEntry->setActiveThread(thread);
         thread->start();
     }
+}
+
+bool ComputerManager::isCurrentPollingThread(const QString& uuid, NvComputer* computer, const QThread* thread)
+{
+    QReadLocker lock(&m_Lock);
+    if (m_KnownHosts.value(uuid) != computer) return false;
+    const auto entry = m_PollEntries.value(uuid);
+    return entry && entry->isActiveThread(thread) && !thread->isInterruptionRequested();
 }
 
 void ComputerManager::handleMdnsServiceResolved(MdnsPendingComputer* computer,
@@ -571,7 +606,7 @@ void ComputerManager::clientSideAttributeUpdated(NvComputer* computer)
 
 void ComputerManager::handleAboutToQuit()
 {
-    QReadLocker lock(&m_Lock);
+    QWriteLocker lock(&m_Lock);
 
     // Interrupt polling threads immediately, so they
     // avoid making additional requests while quitting

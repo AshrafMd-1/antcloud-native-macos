@@ -19,6 +19,8 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_PendingMouseButtonsAllUpOnVideoRegionLeave(false),
       m_PointerRegionLockActive(false),
       m_PointerRegionLockToggledByUser(false),
+      m_MacModifiers(AntCloud::StreamBridge::enabled() ? AntCloud::StreamBridge::modifierMapping()
+                                                    : AntCloud::ModifierMapping({{1, 2, 3}})),
       m_FakeMouseCaptureActive(false),
       m_KeyboardCaptureActive(false),
       m_CaptureSystemKeysMode(prefs.captureSysKeysMode),
@@ -83,6 +85,16 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_SpecialKeyCombos[KeyComboStreamControls].keyCode = SDLK_p;
     m_SpecialKeyCombos[KeyComboStreamControls].scanCode = SDL_SCANCODE_P;
     m_SpecialKeyCombos[KeyComboStreamControls].enabled = m_LocalControls.enabled();
+
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].keyCombo = KeyComboToggleMicrophone;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].keyCode = SDLK_b;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].scanCode = SDL_SCANCODE_B;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].enabled = m_LocalControls.enabled();
+
+    m_SpecialKeyCombos[KeyComboToggleControlsHint].keyCombo = KeyComboToggleControlsHint;
+    m_SpecialKeyCombos[KeyComboToggleControlsHint].keyCode = SDLK_h;
+    m_SpecialKeyCombos[KeyComboToggleControlsHint].scanCode = SDL_SCANCODE_H;
+    m_SpecialKeyCombos[KeyComboToggleControlsHint].enabled = m_LocalControls.enabled();
 
     // Populate special key combo configuration
     m_SpecialKeyCombos[KeyComboQuit].keyCombo = KeyComboQuit;

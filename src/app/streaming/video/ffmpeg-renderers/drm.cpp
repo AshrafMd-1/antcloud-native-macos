@@ -374,7 +374,7 @@ void DrmRenderer::prepareToRender()
 
     // Enter overlay composition mode if we don't have enough planes to display all the
     // possible overlays we might need, but we have at least one available
-    if (m_OverlayPlanes[0].isValid() && !m_OverlayPlanes[Overlay::OverlayMax - 1].isValid()) {
+    if (m_OverlayPlanes[0].isValid() && !m_OverlayPlanes[Overlay::OverlayStatusUpdate].isValid()) {
         enterOverlayCompositionMode();
     }
 
@@ -1557,25 +1557,19 @@ void DrmRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
         return;
     }
 
+    // An optional native hint must not force two-plane Linux sessions into a
+    // new full-frame composition path. Existing composed/three-plane paths support it.
+    if (!m_OverlayCompositionSurface && !m_OverlayPlanes[type].isValid()) {
+        SDL_FreeSurface(Session::get()->getOverlayManager().getUpdatedOverlaySurface(type));
+        return;
+    }
+
     // Upload a new overlay surface if needed
     SDL_Surface* newSurface = Session::get()->getOverlayManager().getUpdatedOverlaySurface(type);
     if (newSurface != nullptr) {
         uint32_t dumbBuffer, fbId;
-        SDL_Rect overlayRect;
-
-        if (type == Overlay::OverlayStatusUpdate) {
-            // Bottom Left
-            overlayRect.x = 0;
-            overlayRect.y = m_OutputRect.h - newSurface->h;
-        }
-        else if (type == Overlay::OverlayDebug) {
-            // Top left
-            overlayRect.x = 0;
-            overlayRect.y = 0;
-        }
-
-        overlayRect.w = newSurface->w;
-        overlayRect.h = newSurface->h;
+        SDL_Rect overlayRect = Overlay::OverlayManager::overlayRect(type, m_OutputRect.w, m_OutputRect.h,
+                                                                   newSurface->w, newSurface->h);
 
         // Try to let the display controller composite for us
         if (!m_OverlayCompositionSurface) {

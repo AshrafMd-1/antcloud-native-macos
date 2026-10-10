@@ -408,12 +408,17 @@ public:
             [m_OverlayTextFields[type] setDrawsBackground:NO];
             [m_OverlayTextFields[type] setEditable:NO];
             [m_OverlayTextFields[type] setSelectable:NO];
+            if (type == Overlay::OverlayControlsHint) {
+                [m_OverlayTextFields[type] setTranslatesAutoresizingMaskIntoConstraints:NO];
+                [[m_OverlayTextFields[type] cell] setUsesSingleLineMode:YES];
+            }
 
             switch (type) {
             case Overlay::OverlayDebug:
                 [m_OverlayTextFields[type] setAlignment:NSTextAlignmentLeft];
                 break;
             case Overlay::OverlayStatusUpdate:
+            case Overlay::OverlayControlsHint:
                 [m_OverlayTextFields[type] setAlignment:NSTextAlignmentRight];
                 break;
             default:
@@ -425,6 +430,17 @@ public:
             [m_OverlayTextFields[type] setFont:[NSFont messageFontOfSize:Session::get()->getOverlayManager().getOverlayFontSize(type)]];
 
             [m_StreamView addSubview: m_OverlayTextFields[type]];
+            if (type == Overlay::OverlayControlsHint) {
+                NSTextField* hint = m_OverlayTextFields[type];
+                [hint setStringValue:[NSString stringWithUTF8String:Session::get()->getOverlayManager().getOverlayText(type)]];
+                // AppKit's top/right anchors remain correct in either view coordinate orientation.
+                [NSLayoutConstraint activateConstraints:@[
+                    [hint.topAnchor constraintEqualToAnchor:m_StreamView.topAnchor],
+                    [hint.rightAnchor constraintEqualToAnchor:m_StreamView.rightAnchor],
+                    [hint.widthAnchor constraintLessThanOrEqualToAnchor:m_StreamView.widthAnchor],
+                    [hint.heightAnchor constraintEqualToConstant:hint.intrinsicContentSize.height]
+                ]];
+            }
         }
 
         // Update text contents

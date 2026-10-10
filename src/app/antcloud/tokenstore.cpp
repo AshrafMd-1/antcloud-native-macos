@@ -1,5 +1,13 @@
 #include "tokenstore.h"
 #include "protocol.h"
+#ifdef ANTCLOUD_TESTING
+#include <QMutex>
+#include <QMutexLocker>
+namespace {
+QMutex storageMutex;
+QByteArray testStoredLogin;
+}
+#endif
 #if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
 #include <Security/Security.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -17,9 +25,28 @@ CFMutableDictionaryRef query() {
 }
 #endif
 
-QString AntCloud::TokenStore::load(QString& error) {
+AntCloud::TokenStore::Credentials AntCloud::TokenStore::decode(const QByteArray& bytes, QString& error) {
     error.clear();
-#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
+    if (bytes.isEmpty()) return {};
+    const QString legacy = QString::fromUtf8(bytes);
+    if (validToken(legacy)) return {legacy, {}};
+    if (bytes.size() <= 65536) {
+        const auto value = QJsonDocument::fromJson(bytes).object();
+        const QString access = value.value("accessToken").toString(), refresh = value.value("refreshToken").toString();
+        if (value.value("version") == QJsonValue(1) && value.value("accessToken").isString()
+            && value.value("refreshToken").isString() && validToken(access) && (refresh.isEmpty() || validToken(refresh)))
+            return {access, refresh};
+    }
+    error = "The saved login has an invalid format. Sign in again to replace it.";
+    return {};
+}
+
+AntCloud::TokenStore::Credentials AntCloud::TokenStore::load(QString& error) {
+    error.clear();
+#if defined(ANTCLOUD_TESTING)
+    QMutexLocker lock(&storageMutex);
+    return decode(testStoredLogin, error);
+#elif defined(Q_OS_MACOS)
     auto request = query();
     CFDictionarySetValue(request, kSecReturnData, kCFBooleanTrue);
     CFDictionarySetValue(request, kSecMatchLimit, kSecMatchLimitOne);
@@ -31,28 +58,30 @@ QString AntCloud::TokenStore::load(QString& error) {
         error = QStringLiteral("Keychain could not read the saved login. You can sign in for this run.");
         return {};
     }
-    QString token;
+    QByteArray bytes;
     if (result && CFGetTypeID(result) == CFDataGetTypeID()) {
         auto data = static_cast<CFDataRef>(result);
-        if (CFDataGetLength(data) <= 16384)
-            token = QString::fromUtf8(reinterpret_cast<const char*>(CFDataGetBytePtr(data)), CFDataGetLength(data));
+        if (CFDataGetLength(data) <= 65536)
+            bytes = QByteArray(reinterpret_cast<const char*>(CFDataGetBytePtr(data)), CFDataGetLength(data));
     }
     if (result) CFRelease(result);
-    if (!validToken(token)) {
-        error = QStringLiteral("The saved login has an invalid format. Sign in again to replace it.");
-        return {};
-    }
-    return token;
+    if (bytes.isEmpty()) { error = "The saved login has an invalid format. Sign in again to replace it."; return {}; }
+    return decode(bytes, error);
 #else
     return {};
 #endif
 }
 
-bool AntCloud::TokenStore::save(const QString& token, QString& error) {
+bool AntCloud::TokenStore::save(const Credentials& credentials, QString& error) {
     error.clear();
-    if (!validToken(token)) { error = "Login token has an invalid format."; return false; }
-#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
-    const auto bytes = token.toUtf8();
+    if (!validToken(credentials.accessToken) || (!credentials.refreshToken.isEmpty() && !validToken(credentials.refreshToken))) {
+        error = "Login token has an invalid format."; return false;
+    }
+    auto bytes = QJsonDocument(QJsonObject{{"version", 1}, {"accessToken", credentials.accessToken},
+        {"refreshToken", credentials.refreshToken}}).toJson(QJsonDocument::Compact);
+#if defined(ANTCLOUD_TESTING)
+    QMutexLocker lock(&storageMutex); testStoredLogin = bytes; return true;
+#elif defined(Q_OS_MACOS)
     auto data = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(bytes.constData()), bytes.size());
     auto request = query();
     auto update = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
@@ -65,6 +94,7 @@ bool AntCloud::TokenStore::save(const QString& token, QString& error) {
         status = SecItemAdd(request, nullptr);
     }
     CFRelease(update); CFRelease(request); CFRelease(data);
+    bytes.fill('\0');
     if (status == errSecSuccess) return true;
     error = "Keychain could not save the login. This run can continue; you will need to sign in next time.";
 #else
@@ -75,7 +105,9 @@ bool AntCloud::TokenStore::save(const QString& token, QString& error) {
 
 bool AntCloud::TokenStore::clear(QString& error) {
     error.clear();
-#if defined(Q_OS_MACOS) && !defined(ANTCLOUD_TESTING)
+#if defined(ANTCLOUD_TESTING)
+    QMutexLocker lock(&storageMutex); testStoredLogin.fill('\0'); testStoredLogin.clear(); return true;
+#elif defined(Q_OS_MACOS)
     auto request = query();
     OSStatus status = SecItemDelete(request);
     CFRelease(request);

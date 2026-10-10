@@ -1,12 +1,41 @@
 #include "antcloud/protocol.h"
 #include <QCoreApplication>
 #include <cassert>
+#include <QSettings>
+#include <QTemporaryDir>
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     using namespace AntCloud;
+    auto mapping=savedModifierMapping({});
+    assert(mapping.target(0)==1 && mapping.target(1)==3 && mapping.target(2)==2);
+    assert(mapping.assign(0,3) && mapping.target(1)==0);
+    assert(mapping.assign(2,3) && mapping.target(0)==0 && mapping.target(2)==3);
+    assert(mapping.assign(2,0) && mapping.target(0)==0 && mapping.target(1)==0);
+    assert(!mapping.assign(-1,1) && !mapping.assign(3,1) && !mapping.assign(0,4));
+    auto invalid=savedModifierMapping({3,3,99});
+    assert(invalid.target(0)==3 && invalid.target(1)==0 && invalid.target(2)==0);
+    invalid=savedModifierMapping({"bad",-1,2});
+    assert(invalid.target(0)==0 && invalid.target(1)==0 && invalid.target(2)==2);
+    assert(savedModifierMapping({1,2}).target(1)==3);
+    QTemporaryDir storage;
+    assert(storage.isValid());
+    const QString settingsPath=storage.filePath("test.ini");
+    {
+        QSettings settings(settingsPath,QSettings::IniFormat);
+        mapping.assign(0,2); mapping.assign(1,1);
+        settings.setValue("native/modifierMapping",modifierMappingValues(mapping));
+        settings.sync(); assert(settings.status()==QSettings::NoError);
+    }
+    QSettings settings(settingsPath,QSettings::IniFormat);
+    auto restored=savedModifierMapping(settings.value("native/modifierMapping").toList());
+    assert(restored.packed()==mapping.packed());
+    assert(ModifierMapping::fromPacked(mapping.packed()).packed()==mapping.packed());
     assert(validToken("abc.def-123"));
     assert(!validToken("abc\nsecret"));
+    assert(!validToken("abc\n") && !validToken("abc\r\n") && !validToken("abc\r"));
+    assert(validToken(QString(16384, 'a')));
+    assert(!validToken(QString(16384, 'a') + '\n'));
     assert(!validToken(QString(16385, 'a')));
     assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"}}}}) == 1080);
     assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", 1080}}}}) == 0);
@@ -23,6 +52,19 @@ int main(int argc, char** argv) {
     StreamSettings s;
     assert(s.isValid());
     assert(s.providerSpec() == "720 6000 60 10");
+    const StreamSettings presets[] = {
+        {1280, 720, 60, 6000}, {1920, 1080, 60, 6000},
+        {2560, 1440, 60, 6000}, {3840, 2160, 60, 6000}
+    };
+    const int providerPresets[] = {720, 1080, 1440, 2160};
+    const char* providerSpecs[] = {
+        "720 6000 60 10", "1080 6000 60 10", "1440 6000 60 10", "2160 6000 60 10"
+    };
+    for (int i = 0; i < 4; ++i) {
+        assert(presets[i].isValid());
+        assert(presets[i].preset() == providerPresets[i]);
+        assert(presets[i].providerSpec() == QLatin1String(providerSpecs[i]));
+    }
     s.width = 1440; s.height = 900;
     assert(!s.isValid() && s.preset() == 0);
     s.width = 1440; s.height = 901;
@@ -32,8 +74,11 @@ int main(int argc, char** argv) {
         assert(savedResolutionIndex(old, 1) == migrated[old]);
     }
     for (int current = 0; current < 4; ++current) assert(savedResolutionIndex(current, 2) == current);
-    assert(savedResolutionIndex(99, 2) == 0);
-    assert(savedResolutionIndex(-1, 1) == 0);
+    assert(savedResolutionIndex(99, 2) == 1);
+    assert(savedResolutionIndex(-1, 1) == 1);
+    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), 2) == 1);
+    settings.setValue("native/resolutionIndex", 0);
+    assert(savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), 2) == 0);
     for (int bitrate : BitrateChoices) assert(savedBitrate(bitrate) == bitrate);
     assert(savedBitrate(45000) == 45000 && savedBitrate(50000) == 50000);
     assert(savedBitrate(1999) == 6000 && savedBitrate(50001) == 6000);

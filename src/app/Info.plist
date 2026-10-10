@@ -42,6 +42,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Moonlight uses the local network to connect to your gaming PC for streaming.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AntCloud Native uses your microphone only when you enable Send microphone for a connected VM stream.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_nvstream._tcp</string>

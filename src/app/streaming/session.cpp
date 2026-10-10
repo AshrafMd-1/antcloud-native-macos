@@ -77,6 +77,7 @@ void Session::clStageStarting(int stage)
 
 void Session::clStageFailed(int stage, int errorCode)
 {
+    AntCloud::StreamBridge::invalidateMicrophoneSession();
     // Perform the port test now, while we're on the async connection thread and not blocking the UI.
     unsigned int portFlags = LiGetPortFlagsFromStage(stage);
     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
@@ -88,6 +89,7 @@ void Session::clStageFailed(int stage, int errorCode)
 
 void Session::clConnectionTerminated(int errorCode)
 {
+    AntCloud::StreamBridge::invalidateMicrophoneSession();
     unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
 
@@ -1173,14 +1175,12 @@ bool Session::validateLaunch(SDL_Window* testWindow)
         }
     }
 
-    if (m_StreamConfig.width >= 3840) {
-        // Only allow 4K on GFE 3.x+
-        if (m_Computer->gfeVersion.isEmpty() || m_Computer->gfeVersion.startsWith("2.")) {
-            emitLaunchWarning(tr("GeForce Experience 3.0 or higher is required for 4K streaming."));
+    if (m_StreamConfig.width >= 3840 && !m_Computer->supports4K()) {
+        setProperty("legacy4KFallback", true);
+        emitLaunchWarning(tr("GeForce Experience 3.0 or higher is required for 4K streaming; using 1920×1080."));
 
-            m_StreamConfig.width = 1920;
-            m_StreamConfig.height = 1080;
-        }
+        m_StreamConfig.width = 1920;
+        m_StreamConfig.height = 1080;
     }
 
     // Test if audio works at the specified audio configuration
@@ -1621,9 +1621,11 @@ bool Session::startConnectionAsync()
                       !m_Preferences->multiController,
                       rtspSessionUrl);
     } catch (const GfeHttpResponseException& e) {
+        emit nativeHostRequestFailed(e.getStatusCode(), false);
         emit displayLaunchError(tr("Host returned error: %1").arg(e.toQString()));
         return false;
     } catch (const QtNetworkReplyException& e) {
+        emit nativeHostRequestFailed(int(e.getError()), true);
         emit displayLaunchError(e.toQString());
         return false;
     }
@@ -1779,6 +1781,7 @@ void Session::start()
 
 void Session::interrupt()
 {
+    AntCloud::StreamBridge::invalidateMicrophoneSession();
     // Stop any connection in progress
     LiInterruptConnection();
 
@@ -2322,6 +2325,7 @@ void Session::exec()
     }
 
 DispatchDeferredCleanup:
+    AntCloud::StreamBridge::invalidateMicrophoneSession();
     // Switch back to synchronous logging mode
     StreamUtils::exitAsyncLoggingMode();
 

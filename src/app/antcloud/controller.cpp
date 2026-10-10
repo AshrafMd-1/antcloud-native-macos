@@ -1,5 +1,6 @@
 #include "controller.h"
 #include "streambridge.h"
+#include "microphone.h"
 #include "backend/computermanager.h"
 #include "backend/computerseeker.h"
 #include "settings/streamingpreferences.h"
@@ -13,10 +14,15 @@ namespace {
 const QSize resolutions[] = {{1280,720}, {1920,1080}, {2560,1440}, {3840,2160}};
 const int frameRates[] = {30,60,120};
 }
-Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new ProviderWorker) {
+Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new ProviderWorker), m_Microphone(new Microphone(this)) {
+    StreamBridge::installMicrophoneController(this);
+    connect(m_Microphone, &Microphone::changed, this, [this] {
+        if (!m_Microphone->enabled()) StreamBridge::setMicrophoneAllowed(false);
+        emit changed();
+    });
     QSettings settings;
     const int resolutionSchema = settings.value("native/resolutionSchema", 1).toInt();
-    m_ResolutionIndex = savedResolutionIndex(settings.value("native/resolutionIndex", 0).toInt(), resolutionSchema);
+    m_ResolutionIndex = savedResolutionIndex(settings.value("native/resolutionIndex", DefaultResolutionIndex).toInt(), resolutionSchema);
     if (resolutionSchema < 2) {
         settings.setValue("native/resolutionIndex", m_ResolutionIndex);
         settings.setValue("native/resolutionSchema", 2);
@@ -27,6 +33,8 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
     m_Fullscreen = settings.value("native/fullscreen", true).toBool();
     m_RelativeMouse = settings.value("native/relativeMouse", true).toBool();
     m_ShowStats = settings.value("native/showStats", true).toBool();
+    m_ShowControlsHint = settings.value("native/showControlsHint", true).toBool();
+    m_Modifiers = savedModifierMapping(settings.value("native/modifierMapping").toList());
     m_Worker->moveToThread(&m_Thread);
     connect(&m_Thread, &QThread::started, m_Worker, &ProviderWorker::initialize);
     connect(&m_Thread, &QThread::finished, m_Worker, &QObject::deleteLater);
@@ -63,6 +71,8 @@ Controller::Controller(QObject* parent) : QObject(parent), m_Worker(new Provider
 }
 
 Controller::~Controller() {
+    StreamBridge::installMicrophoneController(nullptr);
+    m_Microphone->stopSession();
     // The seeker borrows the manager; destroy it before QObject deletes child objects.
     if (m_Seeker) { delete m_Seeker; m_Seeker = nullptr; }
     stopPolling();
@@ -87,6 +97,7 @@ void Controller::login(QString email, QString password, bool remember) {
 
 void Controller::signOut() {
     if (busy()) return;
+    m_Microphone->stopSession();
     m_Error.clear(); m_Notice.clear(); m_ShutdownStatus.clear();
     setStage("authenticating", "Removing your saved login…");
     QMetaObject::invokeMethod(m_Worker, "signOut", Qt::QueuedConnection);
@@ -106,6 +117,7 @@ void Controller::start() {
     settings.setValue("native/resolutionIndex", m_ResolutionIndex); settings.setValue("native/fpsIndex", m_FpsIndex);
     settings.setValue("native/bitrate", m_Bitrate); settings.setValue("native/codecIndex", m_CodecIndex); settings.setValue("native/fullscreen", m_Fullscreen);
     settings.setValue("native/relativeMouse", m_RelativeMouse); settings.setValue("native/showStats", m_ShowStats);
+    settings.setValue("native/showControlsHint", m_ShowControlsHint);
     m_Preferences = StreamingPreferences::get();
     m_Preferences->width = spec.width; m_Preferences->height = spec.height; m_Preferences->fps = spec.fps;
     m_Preferences->bitrateKbps = spec.bitrate;
@@ -117,6 +129,10 @@ void Controller::start() {
     m_Preferences->videoCodecConfig = codecs[m_CodecIndex]; m_Preferences->enableHdr = false;
     m_Preferences->gameOptimizations = false; m_Preferences->quitAppAfter = false;
     m_Preferences->showPerformanceOverlay = m_ShowStats; m_Preferences->richPresence = false; m_Preferences->enableMdns = false;
+    StreamBridge::setModifierMapping(m_Modifiers);
+    StreamBridge::setControlsHint(m_ShowControlsHint);
+    m_MicrophoneHost.clear();
+    m_MicrophoneGeneration = StreamBridge::beginMicrophoneSession();
     m_Active = true; m_ProviderActive = true; m_Computer = nullptr;
     m_Clock.start(); emit elapsedChanged(); m_ElapsedTimer.start(); setStage("connecting", "Opening your provider session…");
     StreamBridge::setHostRequestsAllowed(true);
@@ -124,8 +140,29 @@ void Controller::start() {
     QMetaObject::invokeMethod(m_Worker, "start", Qt::QueuedConnection, Q_ARG(int, spec.width), Q_ARG(int, spec.height), Q_ARG(int, spec.fps), Q_ARG(int, spec.bitrate));
 }
 
+void Controller::setModifierMapping(int row, int target) {
+    if (busy() || !m_Modifiers.assign(row, target)) return;
+    QSettings().setValue("native/modifierMapping", modifierMappingValues(m_Modifiers));
+    emit settingsChanged();
+}
+
+bool Controller::microphoneEnabled() const { return m_Microphone->enabled(); }
+QString Controller::microphoneStatus() const { return m_Microphone->status(); }
+void Controller::setMicrophoneEnabled(bool enabled) {
+    if (busy() && (m_Phase != "connected" || !m_Active || !StreamBridge::active()
+        || !StreamBridge::hostRequestsAllowed() || StreamBridge::expectedEnd()
+        || m_MicrophoneGeneration != StreamBridge::microphoneSessionGeneration())) return;
+    StreamBridge::setMicrophoneAllowed(enabled && m_Phase == "connected" && m_Active, m_MicrophoneGeneration);
+    m_Microphone->setEnabled(enabled);
+}
+void Controller::toggleMicrophone(qulonglong generation) {
+    if (generation != m_MicrophoneGeneration || m_Phase != "connected" || !m_Active || StreamBridge::expectedEnd()) return;
+    setMicrophoneEnabled(!microphoneEnabled());
+}
+
 void Controller::findHost(const QString& address) {
     if (!m_Active) return;
+    m_MicrophoneHost = vmAddress(QJsonObject{{"vmip", address}});
     setStage("host", "VM address available. Contacting the native streaming host…");
     if (!m_Manager) {
         m_Manager = new ComputerManager(m_Preferences); m_Manager->setParent(this);
@@ -178,32 +215,47 @@ void Controller::launchIfReady() {
     m_AppTimeout.stop(); stopPolling();
     m_Session = new Session(m_Computer, desktop, m_Preferences);
     QQmlEngine::setObjectOwnership(m_Session, QQmlEngine::CppOwnership);
-    connect(m_Session, &Session::stageStarting, this, [this](const QString&) {
-        if (m_Active && !StreamBridge::expectedEnd()) setStage("video", "Starting the encrypted video and audio connection…");
+    const QPointer<Session> session = m_Session;
+    connect(m_Session, &Session::stageStarting, this, [this, session](const QString&) {
+        if (session && session == m_Session && m_Active && !StreamBridge::expectedEnd()) setStage("video", "Starting the encrypted video and audio connection…");
     });
-    connect(m_Session, &Session::stageFailed, this, [this](const QString&, int code, const QString&) {
-        if (!m_Active || StreamBridge::expectedEnd()) return;
+    connect(m_Session, &Session::stageFailed, this, [this, session](const QString&, int code, const QString&) {
+        if (!session || session != m_Session || !m_Active || StreamBridge::expectedEnd()) return;
         m_Error = QString("Native streaming failed (error %1). Export diagnostics and check the dashboard.").arg(code); record(m_Error); emit changed();
     });
-    connect(m_Session, &Session::displayLaunchError, this, [this](const QString&) {
-        if (!m_Active || StreamBridge::expectedEnd()) return;
+    connect(m_Session, &Session::nativeHostRequestFailed, this, [this, session](int code, bool transport) {
+        if (!session || session != m_Session || !m_Active || StreamBridge::expectedEnd()) return;
+        m_Error = transport
+            ? QString("Could not reach the native host for Desktop launch/resume (network error %1). Check your connection and the dashboard.").arg(code)
+            : QString("The native host rejected Desktop launch/resume (host error %1). Check the dashboard and export diagnostics before retrying.").arg(code);
+        record(m_Error); emit changed();
+    });
+    connect(m_Session, &Session::displayLaunchError, this, [this, session](const QString&) {
+        if (!session || session != m_Session || !m_Active || StreamBridge::expectedEnd()) return;
+        if (!m_Error.isEmpty()) return;
         m_Error = "The native stream could not start. Check your settings and the dashboard."; record(m_Error); emit changed();
     });
-    connect(m_Session, &Session::connectionStarted, this, [this] {
-        if (!m_Active || StreamBridge::expectedEnd()) return;
+    connect(m_Session, &Session::connectionStarted, this, [this, session] {
+        if (!session || session != m_Session || !m_Active || StreamBridge::expectedEnd()
+            || m_MicrophoneGeneration != StreamBridge::microphoneSessionGeneration()) return;
         m_Error.clear(); m_ElapsedTimer.stop();
         setStage("connected", "Video connected. Use Control + Command + Shift + P for local controls.");
+        StreamBridge::setMicrophoneAllowed(microphoneEnabled(), m_MicrophoneGeneration);
+        m_Microphone->startSession(m_MicrophoneHost);
         if (m_Window) m_Window->hide();
     });
-    connect(m_Session, &Session::sessionFinished, this, [this](int) {
+    connect(m_Session, &Session::sessionFinished, this, [this, session](int) {
+        if (!session || session != m_Session) return;
         StreamBridge::setActive(false);
+        m_Microphone->stopSession(); m_MicrophoneHost.clear();
         if (m_Window) { m_Window->show(); m_Window->requestActivate(); }
         QMetaObject::invokeMethod(m_Worker, "stopAfterStream", Qt::QueuedConnection);
         m_Active = false; m_StreamWarning.clear(); m_ElapsedTimer.stop();
         setStage("idle", "Disconnected.");
     });
-    connect(m_Session, &Session::readyForDeletion, this, [this] {
-        if (m_Session) m_Session->deleteLater();
+    connect(m_Session, &Session::readyForDeletion, this, [this, session] {
+        if (!session || session != m_Session) return;
+        if (session) session->deleteLater();
         m_Session = nullptr; emit changed();
     });
     setStage("video", "Preparing the native decoder and input capture…");
@@ -214,13 +266,18 @@ void Controller::launchIfReady() {
     if (!m_Active) {
         m_Session->deleteLater(); m_Session = nullptr; emit changed(); return;
     }
-    if (!m_Session->property("launchWarnings").toStringList().isEmpty())
+    if (m_Session->property("legacy4KFallback").toBool()) {
+        m_StreamWarning = "Stream advisory: this legacy NVIDIA host reduced the requested 4K setting to 1920×1080.";
+        record(m_StreamWarning);
+    } else if (!m_Session->property("launchWarnings").toStringList().isEmpty())
         m_StreamWarning = "Stream advisory: the engine reported a configuration warning. If video or input fails, try 720p / 60 FPS.";
     StreamBridge::setActive(true);
     m_Session->start();
 }
 
 void Controller::finish(const QString& message) {
+    StreamBridge::setMicrophoneAllowed(false);
+    m_Microphone->stopSession(); m_MicrophoneHost.clear();
     if (!message.isEmpty()) { m_Error = message; record(message); }
     m_Active = false; m_StreamWarning.clear(); m_ElapsedTimer.stop(); m_AppTimeout.stop();
     if (m_Seeker) { delete m_Seeker; m_Seeker = nullptr; }

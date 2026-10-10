@@ -435,21 +435,10 @@ void VDPAURenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             return;
         }
 
-        VdpRect overlayRect;
-
-        if (type == Overlay::OverlayStatusUpdate) {
-            // Bottom Left
-            overlayRect.x0 = 0;
-            overlayRect.y0 = m_DisplayHeight - newSurface->h;
-        }
-        else if (type == Overlay::OverlayDebug) {
-            // Top left
-            overlayRect.x0 = 0;
-            overlayRect.y0 = 0;
-        }
-
-        overlayRect.x1 = overlayRect.x0 + newSurface->w;
-        overlayRect.y1 = overlayRect.y0 + newSurface->h;
+        SDL_Rect position = Overlay::OverlayManager::overlayRect(type, m_DisplayWidth, m_DisplayHeight,
+                                                                newSurface->w, newSurface->h);
+        VdpRect overlayRect = {(uint32_t)position.x, (uint32_t)position.y,
+                              (uint32_t)(position.x + position.w), (uint32_t)(position.y + position.h)};
 
         // Surface data is no longer needed
         SDL_FreeSurface(newSurface);

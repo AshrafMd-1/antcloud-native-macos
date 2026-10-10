@@ -3,8 +3,29 @@
 #include "streambridge.h"
 #include <QUrlQuery>
 #include <QThread>
+#include <QDateTime>
 
 namespace AntCloud {
+namespace {
+bool accessExpired(int status, const QJsonObject& value) {
+    const QString message = value.value("message").toString();
+    return status == 401 || message == "Token Expired" || message == "Session Expired";
+}
+bool credentialsRejected(int status, const QJsonObject& value) {
+    const QString message = value.value("message").toString();
+    return status == 401 || status == 403 || message == "Invalid Token" || message == "Token Expired"
+        || message == "Session Expired" || message == "Re-authentication needed!"
+        || message == "Forbidden Request!" || message == "Refresh Token Expired";
+}
+bool expiryPreflightNeeded(const QString& token) {
+    const auto parts = token.toLatin1().split('.');
+    if (parts.size() != 3) return false;
+    const auto expiry = QJsonDocument::fromJson(QByteArray::fromBase64(parts[1], QByteArray::Base64UrlEncoding)).object().value("exp");
+    // Decoded claims only select an authenticated read; they never establish login.
+    return expiry.isDouble() && std::isfinite(expiry.toDouble()) && expiry.toDouble() > 0
+        && std::floor(expiry.toDouble()) == expiry.toDouble() && expiry.toDouble() <= QDateTime::currentSecsSinceEpoch();
+}
+}
 ProviderWorker::ProviderWorker(QObject* parent) : QObject(parent) {}
 
 void ProviderWorker::initialize() {
@@ -13,13 +34,17 @@ void ProviderWorker::initialize() {
     m_Poll = new QTimer(this); m_Poll->setInterval(2000);
     m_Startup = new QTimer(this); m_Startup->setSingleShot(true); m_Startup->setInterval(StartupTimeoutMs);
     m_Heartbeat = new QTimer(this); m_Heartbeat->setSingleShot(true);
+    m_AccountPoll = new QTimer(this); m_AccountPoll->setInterval(60000);
     connect(m_Poll, &QTimer::timeout, this, &ProviderWorker::poll);
     connect(m_Startup, &QTimer::timeout, this, [this] { finish("The VM did not connect within five minutes. Check the AntCloud dashboard before retrying."); });
     connect(m_Heartbeat, &QTimer::timeout, this, [this] { finish("The provider connection stopped responding. Your stream has been disconnected."); });
+    connect(m_AccountPoll, &QTimer::timeout, this, &ProviderWorker::refreshRemainingMinutes);
 }
 
-void ProviderWorker::request(const QString& path, const QJsonObject& body, bool post, bool session, Reply callback) {
+void ProviderWorker::request(const QString& path, const QJsonObject& body, bool post, bool session, Reply callback, bool allowRenewal) {
     const int generation = session ? m_Generation : m_AuthGeneration;
+    const int authGeneration = m_AuthGeneration;
+    const qulonglong tokenRevision = m_TokenRevision;
 #ifdef ANTCLOUD_TESTING
     const QUrl url(m_Api.toString() + path);
 #else
@@ -29,7 +54,8 @@ void ProviderWorker::request(const QString& path, const QJsonObject& body, bool 
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     request.setTransferTimeout(20000);
     request.setRawHeader("Accept", "application/json");
-    if (!m_Token.isEmpty()) request.setRawHeader("Authorization", "JWT " + m_Token.toUtf8());
+    if (path == "/api/users/refresh") request.setRawHeader("refresh", "JWT " + m_RefreshToken.toUtf8());
+    else if (!m_Token.isEmpty()) request.setRawHeader("Authorization", "JWT " + m_Token.toUtf8());
     QByteArray payload;
     if (post) {
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -43,41 +69,74 @@ void ProviderWorker::request(const QString& path, const QJsonObject& body, bool 
     connect(reply, &QNetworkReply::readyRead, this, [reply] {
         if (reply->bytesAvailable() > 1024 * 1024) reply->abort();
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, session, generation, callback] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, path, post, session, generation, authGeneration, tokenRevision, callback, allowRenewal] {
         m_Requests.remove(reply);
         reply->deleteLater();
-        if (generation != (session ? m_Generation : m_AuthGeneration)) return;
-        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (authGeneration != m_AuthGeneration || generation != (session ? m_Generation : m_AuthGeneration)) return;
+        int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const auto bytes = reply->read(1024 * 1024 + 1);
         QJsonParseError error;
         const auto doc = QJsonDocument::fromJson(bytes, &error);
-        if (bytes.size() > 1024 * 1024 || error.error != QJsonParseError::NoError || !doc.isObject()) {
-            callback(status >= 400 ? status : 0, {}); return;
+        QJsonObject value;
+        if (bytes.size() <= 1024 * 1024 && error.error == QJsonParseError::NoError && doc.isObject()) value = doc.object();
+        else status = status >= 400 ? status : 0;
+        if (!post && allowRenewal && path != "/api/users/refresh" && accessExpired(status, value) && validToken(m_RefreshToken)) {
+            if (tokenRevision != m_TokenRevision) {
+                this->request(path, {}, false, session, callback, false); return;
+            }
+            renewCredentials([this, path, session, generation, authGeneration, callback](RenewalResult result) {
+                if (authGeneration != m_AuthGeneration || generation != (session ? m_Generation : m_AuthGeneration)) return;
+                if (result == RenewalResult::Success) this->request(path, {}, false, session, callback, false);
+                else callback(result == RenewalResult::Rejected ? 401 : 0, {});
+            });
+            return;
         }
-        callback(status, doc.object());
+        callback(status, value);
     });
 }
 
-void ProviderWorker::restore() {
-    updateRemainingMinutes(-1);
-    QString error;
-    const QString token = TokenStore::load(error);
-    if (token.isEmpty()) { emit account(false, 0, error); return; }
-    emit stage("authenticating", "Checking your saved login…");
-    authenticateToken(token);
+void ProviderWorker::renewCredentials(std::function<void(RenewalResult)> callback) {
+    m_RenewalWaiters.append(std::move(callback));
+    if (m_RenewalPending) return;
+    m_RenewalPending = true;
+    request("/api/users/refresh", {}, false, false, [this](int status, const QJsonObject& value) {
+        m_RenewalPending = false;
+        RenewalResult result = RenewalResult::TemporaryFailure;
+        const QString access = value.value("accessToken").toString(), refresh = value.value("refreshToken").toString();
+        if (status >= 200 && status < 300 && validToken(access) && validToken(refresh)) {
+            m_Token = access; m_RefreshToken = refresh; ++m_TokenRevision;
+            if (m_Remember) {
+                QString error;
+                if (!TokenStore::save({m_Token, m_RefreshToken}, error)) emit notice(error);
+            }
+            result = RenewalResult::Success;
+        } else if (credentialsRejected(status, value)) result = RenewalResult::Rejected;
+        const auto waiters = std::move(m_RenewalWaiters);
+        m_RenewalWaiters.clear();
+        for (const auto& waiter : waiters) waiter(result);
+    }, false);
 }
 
-void ProviderWorker::authenticateToken(const QString& token) {
-    ++m_AuthGeneration; clearRequests(false); m_Token = token;
-    request("/api/users/me", {}, false, false, [this, token](int status, const QJsonObject& value) {
-        if (status == 401) {
-            QString error; TokenStore::clear(error); m_Token.clear();
+void ProviderWorker::restore() {
+    if (m_Active) return;
+    QString error;
+    const auto credentials = TokenStore::load(error);
+    if (credentials.accessToken.isEmpty()) { resetAccount(); emit account(false, 0, error); return; }
+    emit stage("authenticating", "Checking your saved login…");
+    authenticateToken(credentials.accessToken, credentials.refreshToken, true);
+}
+
+void ProviderWorker::authenticateToken(const QString& token, const QString& refreshToken, bool remember) {
+    resetAccount(); m_Token = token; m_RefreshToken = refreshToken; m_Remember = remember;
+    request("/api/users/me", {}, false, false, [this](int status, const QJsonObject& value) {
+        if (credentialsRejected(status, value)) {
+            QString error; TokenStore::clear(error); m_Token.clear(); m_RefreshToken.clear();
             emit account(false, 0, error);
             emit authenticationFailed("Your saved login was rejected. Please sign in again.");
         } else if (status != 200 || !accountLimit(value)) {
-            m_Token.clear(); emit account(false, 0, {});
-            emit authenticationFailed("Could not validate the saved login. Check your connection and sign in; the saved token was kept.");
-        } else { acceptAccount(value, token, false); }
+            m_Token.clear(); m_RefreshToken.clear(); emit account(false, 0, {});
+            emit authenticationFailed("Could not validate the saved login. Check your connection and retry; the saved login was kept.");
+        } else { acceptAccount(value, m_Token, m_Remember, m_RefreshToken); }
     });
 }
 
@@ -86,8 +145,7 @@ void ProviderWorker::login(QString email, QString password, bool remember) {
     if (email.trimmed().isEmpty() || email.size() > 320 || password.isEmpty() || password.size() > 4096) {
         emit authenticationFailed("Enter your AntCloud email and password."); return;
     }
-    ++m_AuthGeneration; clearRequests(false); m_Token.clear();
-    updateRemainingMinutes(-1);
+    resetAccount();
     emit stage("authenticating", "Signing in to AntCloud…");
     request("/api/users/login", {{"email", email.trimmed()}, {"password", password}}, true, false,
         [this, remember](int status, const QJsonObject& value) {
@@ -96,34 +154,71 @@ void ProviderWorker::login(QString email, QString password, bool remember) {
             return;
         }
         const QString token = value.value("token").toString();
+        const auto user = value.value("user").toObject();
+        const QString refresh = user.value("refreshToken").toString();
         if (!validToken(token) || !accountLimit(value)) {
             emit authenticationFailed("AntCloud returned unexpected account details. This does not mean the password was wrong."); return;
+        }
+        if (user.contains("refreshToken") && !validToken(refresh)) {
+            emit authenticationFailed("AntCloud returned unexpected login renewal details. Please try signing in again."); return;
         }
         if (!remember) {
             QString error; TokenStore::clear(error);
             if (!error.isEmpty()) emit notice(error);
         }
-        acceptAccount(value, token, remember);
+        acceptAccount(value, token, remember, refresh);
     });
     password.fill(QChar('\0'));
 }
 
-void ProviderWorker::updateRemainingMinutes(int minutes) {
-    StreamBridge::setRemainingMinutes(minutes);
-    emit remainingMinutesChanged(minutes);
+void ProviderWorker::resetAccount() {
+    ++m_AuthGeneration; clearRequests(false); m_Token.clear(); m_RefreshToken.clear(); m_Limit = 0;
+    ++m_TokenRevision; m_Remember = false; m_RenewalPending = false; m_RenewalWaiters.clear();
+    m_AccountPoll->stop(); m_AccountRefreshPending = false; m_AccountRefreshAgain = false;
+    m_RemainingMinutes = -1; ++m_TimeRevision;
+    StreamBridge::setRemainingMinutes(-1);
+    emit remainingMinutesChanged(-1);
 }
 
-void ProviderWorker::acceptAccount(const QJsonObject& value, const QString& token, bool remember) {
-    m_Token = token; m_Limit = accountLimit(value);
+void ProviderWorker::refreshRemainingMinutes() {
+    if (!validToken(m_Token)) return;
+    if (m_AccountRefreshPending) { m_AccountRefreshAgain = true; return; }
+    m_AccountRefreshPending = true;
+    const int generation = m_Generation, revision = m_TimeRevision;
+    request("/api/users/me", {}, false, false, [this, generation, revision](int status, const QJsonObject& value) {
+        m_AccountRefreshPending = false;
+        const bool refreshAgain = m_AccountRefreshAgain;
+        m_AccountRefreshAgain = false;
+        // Do not apply stale data, but honor a refresh requested at a boundary
+        // during this read. Authentication guards run in request().
+        if (generation == m_Generation && revision == m_TimeRevision && status == 200 && accountLimit(value)) {
+            const int minutes = accountRemainingMinutes(value);
+            if (minutes >= 0) updateRemainingMinutes(minutes);
+        }
+        if (refreshAgain) refreshRemainingMinutes();
+    });
+}
+
+void ProviderWorker::updateRemainingMinutes(int minutes) {
+    // Invalid stream data cannot erase either last validated balance.
+    if (minutes < 0) return;
+    StreamBridge::setRemainingMinutes(m_Active ? minutes : -1);
+    m_RemainingMinutes = minutes; ++m_TimeRevision;
+    emit remainingMinutesChanged(m_RemainingMinutes);
+}
+
+void ProviderWorker::acceptAccount(const QJsonObject& value, const QString& token, bool remember, const QString& refreshToken) {
+    m_Token = token; m_RefreshToken = refreshToken; m_Remember = remember; m_Limit = accountLimit(value);
     updateRemainingMinutes(accountRemainingMinutes(value));
     QString message;
-    if (remember) TokenStore::save(token, message);
+    if (remember) TokenStore::save({m_Token, m_RefreshToken}, message);
     emit account(true, m_Limit, message);
+    m_AccountPoll->start();
+    if (m_RemainingMinutes < 0) refreshRemainingMinutes();
 }
 
 void ProviderWorker::signOut() {
-    stop(); ++m_AuthGeneration; clearRequests(false); m_Token.clear(); m_Limit = 0;
-    updateRemainingMinutes(-1);
+    stop(); resetAccount();
     QString error; TokenStore::clear(error); emit account(false, 0, error);
 }
 
@@ -134,13 +229,35 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
         emit ended("Choose supported stream settings within your account’s resolution limit."); return;
     }
     m_Active = true; ++m_Generation; m_Ready = false; m_Shutdown = false;
-    updateRemainingMinutes(-1);
+    StreamBridge::setPairingGeneration(qulonglong(m_Generation));
+    StreamBridge::setRemainingMinutes(-1);
     StreamBridge::setExpectedEnd(false);
     m_PinSubmitted = false;
     m_Polling = false; m_RequestPending = false; m_Namespace = false; m_Address.clear();
+    // An old close cannot end this attempt while its login preflight is pending.
+    if (m_Socket) { m_Socket->disconnect(this); delete m_Socket; m_Socket = nullptr; }
+    m_Startup->start();
+    if (expiryPreflightNeeded(m_Token)) {
+        emit stage("connecting", "Checking your AntCloud login before connecting…");
+        request("/api/users/me", {}, false, true, [this](int status, const QJsonObject& value) {
+            if (status != 200 || !accountLimit(value)) {
+                finish("Could not renew your AntCloud login before connecting. Retry, or sign in again if the saved login expired."); return;
+            }
+            m_Limit = accountLimit(value);
+            if (m_Settings.preset() > m_Limit) {
+                finish("Choose stream settings within your current account’s resolution limit."); return;
+            }
+            updateRemainingMinutes(accountRemainingMinutes(value));
+            openProviderSocket();
+        });
+        return;
+    }
+    openProviderSocket();
+}
+
+void ProviderWorker::openProviderSocket() {
+    if (!m_Active || m_Shutdown) return;
     emit stage("connecting", "Opening your provider session…");
-    // Recreate the socket so a previous connection cannot deliver events into a new session.
-    if (m_Socket) { m_Socket->disconnect(this); delete m_Socket; }
     m_Socket = new QWebSocket(QStringLiteral("https://antcloud.co"), QWebSocketProtocol::VersionLatest, this);
     m_Socket->setMaxAllowedIncomingMessageSize(65536);
     m_Socket->setMaxAllowedIncomingFrameSize(65536);
@@ -164,7 +281,8 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
     query.addQueryItem("token", m_Token); query.addQueryItem("connection", "mobile");
     query.addQueryItem("stream", m_Settings.providerSpec()); url.setQuery(query);
     m_Socket->open(url);
-    m_HeartbeatMs = 45000; m_Heartbeat->start(m_HeartbeatMs); m_Startup->start();
+    m_HeartbeatMs = 45000; m_Heartbeat->start(m_HeartbeatMs);
+    refreshRemainingMinutes();
 }
 
 bool ProviderWorker::send(const QString& packet) {
@@ -260,9 +378,10 @@ void ProviderWorker::checkConnection() {
     });
 }
 
-void ProviderWorker::pair(QString pin) {
-    static const QRegularExpression pattern("^[0-9]{4}$");
-    if (!m_Active || m_Address.isEmpty() || m_PinSubmitted || !pattern.match(pin).hasMatch()) return;
+void ProviderWorker::pair(QString pin, qulonglong generation) {
+    static const QRegularExpression pattern(QRegularExpression::anchoredPattern("[0-9]{4}"));
+    if (generation != qulonglong(m_Generation) || !m_Active || m_Shutdown || m_Address.isEmpty()
+        || m_PinSubmitted || !pattern.match(pin).hasMatch()) return;
     m_PinSubmitted = true;
     request("/api/vm/vmauth", {{"pin", pin}}, true, true, [this](int status, const QJsonObject& value) {
         if (status != 200 || !pinAccepted(value)) finish("The pairing PIN was not confirmed. Check the dashboard before retrying; it will not be submitted again automatically.");
@@ -279,12 +398,14 @@ void ProviderWorker::clearRequests(bool sessionOnly) {
 void ProviderWorker::finish(const QString& message) {
     if (!m_Active) return;
     m_Active = false; ++m_Generation;
-    updateRemainingMinutes(-1);
+    StreamBridge::setPairingGeneration(0);
+    StreamBridge::setRemainingMinutes(-1);
     StreamBridge::setHostRequestsAllowed(false);
     m_Poll->stop(); m_Startup->stop(); m_Heartbeat->stop();
     clearRequests(true); m_RequestPending = false; m_Polling = false; m_Namespace = false;
     if (m_Socket) m_Socket->close();
     StreamBridge::interrupt(); emit ended(StreamBridge::expectedEnd() ? QString() : message);
+    refreshRemainingMinutes();
 }
 
 void ProviderWorker::stop() { finish({}); }
@@ -299,6 +420,7 @@ void ProviderWorker::shutdown() {
     m_Shutdown = true;
     // Cancel pending readiness replies so they cannot launch video after shutdown.
     ++m_Generation; m_Poll->stop(); m_Startup->stop();
+    StreamBridge::setPairingGeneration(0);
     clearRequests(true); m_RequestPending = false;
     // Send once. Socket write acceptance is not a confirmed VM power state.
     if (!send(eventPacket("closestream"))) {

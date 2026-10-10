@@ -766,6 +766,11 @@ void VAAPIRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             overlayRect.x = 0;
             overlayRect.y = 0;
         }
+        else if (type == Overlay::OverlayControlsHint) {
+            // Negative positions remain anchored when the drawable changes size.
+            overlayRect.x = -newSurface->w;
+            overlayRect.y = 0;
+        }
 
         overlayRect.w = newSurface->w;
         overlayRect.h = newSurface->h;

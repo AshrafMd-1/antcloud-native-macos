@@ -234,19 +234,6 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
                 SDL_DestroyTexture(m_OverlayTextures[type]);
             }
 
-            if (type == Overlay::OverlayStatusUpdate) {
-                // Bottom Left
-                SDL_Rect viewportRect;
-                SDL_RenderGetViewport(m_Renderer, &viewportRect);
-                m_OverlayRects[type].x = 0;
-                m_OverlayRects[type].y = viewportRect.h - newSurface->h;
-            }
-            else if (type == Overlay::OverlayDebug) {
-                // Top left
-                m_OverlayRects[type].x = 0;
-                m_OverlayRects[type].y = 0;
-            }
-
             m_OverlayRects[type].w = newSurface->w;
             m_OverlayRects[type].h = newSurface->h;
 
@@ -261,6 +248,10 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
 
         // If we have an overlay texture, render it too
         if (m_OverlayTextures[type] != nullptr) {
+            SDL_Rect viewportRect;
+            SDL_RenderGetViewport(m_Renderer, &viewportRect);
+            m_OverlayRects[type] = Overlay::OverlayManager::overlayRect(type, viewportRect.w, viewportRect.h,
+                                                                      m_OverlayRects[type].w, m_OverlayRects[type].h);
             SDL_RenderCopy(m_Renderer, m_OverlayTextures[type], nullptr, &m_OverlayRects[type]);
         }
     }

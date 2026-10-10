@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Window
 import QtQml
 import QtQuick.Controls
+import QtQuick.Controls.Basic as Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
@@ -10,9 +11,11 @@ ApplicationWindow {
     id: appWindow
 
     readonly property color accent: "#0867d2"
+    readonly property color accentText: theme.window.hslLightness < 0.5 ? "#82b1ff" : accent
     readonly property color errorColor: theme.window.hslLightness < 0.5 ? "#ff8a80" : "#b42318"
     property bool allowClose: false
     required property var controller
+    readonly property var modifierChoices: ["None", "Ctrl", "Alt", "Windows key"]
     readonly property int currentStage: stageNumbers[appWindow.controller.phase] === undefined ? -1 : stageNumbers[appWindow.controller.phase]
     readonly property var stageNumbers: ({
             "connecting": 0,
@@ -306,7 +309,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         font.pixelSize: 13
                         opacity: 0.75
-                        text: "Your password is never saved. A remembered access token stays in Keychain."
+                        text: "Your password is never saved. Remembered access and refresh tokens stay in Keychain."
                         wrapMode: Text.WordWrap
                     }
                 }
@@ -352,116 +355,285 @@ ApplicationWindow {
                             : "Time left: unavailable"
                         wrapMode: Text.WordWrap
                     }
-                    GridLayout {
+                    Basic.TabBar {
+                        id: settingsTabs
                         Layout.fillWidth: true
-                        columnSpacing: 18
-                        columns: 2
-                        enabled: !appWindow.controller.busy
-                        rowSpacing: 12
+                        objectName: "settingsTabs"
+                        spacing: 0
 
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 280
-                            Layout.preferredWidth: 280
+                        Basic.TabButton {
+                            id: videoTab
+                            objectName: "videoSettingsTab"
+                            text: "Video"
+                            Accessible.name: "Video settings"
+                            font.weight: checked ? Font.DemiBold : Font.Normal
 
-                            Label {
-                                font.weight: Font.DemiBold
-                                text: "Resolution"
+                            contentItem: Text {
+                                text: videoTab.text
+                                font: videoTab.font
+                                color: videoTab.checked ? appWindow.accentText : theme.windowText
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
                             }
-                            ComboBox {
-                                Accessible.name: "Stream resolution"
-                                Layout.fillWidth: true
-                                currentIndex: appWindow.controller.resolutionIndex
-                                model: ["720p · 1280 × 720", "1080p · 1920 × 1080", "2560 × 1440 · Experimental", "3840 × 2160 · Experimental"]
-                                objectName: "resolutionPicker"
 
-                                onActivated: appWindow.controller.resolutionIndex = currentIndex
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 100
-                            Layout.preferredWidth: 120
+                            background: Rectangle {
+                                implicitWidth: 120
+                                implicitHeight: 38
+                                color: videoTab.hovered || videoTab.down ? theme.button : "transparent"
+                                border.width: videoTab.visualFocus ? 1 : 0
+                                border.color: appWindow.accent
+                                radius: 4
 
-                            Label {
-                                font.weight: Font.DemiBold
-                                text: "Frame rate"
-                            }
-                            ComboBox {
-                                Accessible.name: "Stream frame rate"
-                                Layout.fillWidth: true
-                                objectName: "frameRatePicker"
-                                currentIndex: appWindow.controller.fpsIndex
-                                model: ["30 FPS", "60 FPS", "120 FPS"]
-
-                                onActivated: appWindow.controller.fpsIndex = currentIndex
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: videoTab.checked ? 2 : 1
+                                    color: videoTab.checked ? appWindow.accent : theme.mid
+                                    opacity: videoTab.checked ? 1 : 0.35
+                                }
                             }
                         }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 220
-                            Layout.preferredWidth: 240
+                        Basic.TabButton {
+                            id: keyboardTab
+                            objectName: "keyboardSettingsTab"
+                            text: "Keyboard"
+                            Accessible.name: "Keyboard settings"
+                            font.weight: checked ? Font.DemiBold : Font.Normal
 
-                            Label {
-                                font.weight: Font.DemiBold
-                                text: "Quality / bitrate"
+                            contentItem: Text {
+                                text: keyboardTab.text
+                                font: keyboardTab.font
+                                color: keyboardTab.checked ? appWindow.accentText : theme.windowText
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
                             }
-                            ComboBox {
-                                id: bitratePicker
 
-                                property var rates: appWindow.controller.bitrateChoices
+                            background: Rectangle {
+                                implicitWidth: 120
+                                implicitHeight: 38
+                                color: keyboardTab.hovered || keyboardTab.down ? theme.button : "transparent"
+                                border.width: keyboardTab.visualFocus ? 1 : 0
+                                border.color: appWindow.accent
+                                radius: 4
 
-                                Accessible.name: "Video bitrate"
-                                Layout.fillWidth: true
-                                objectName: "bitratePicker"
-                                currentIndex: Math.max(0, rates.indexOf(appWindow.controller.bitrate))
-                                model: rates.map(function(rate) { return (rate / 1000) + " Mbps" })
-
-                                onActivated: appWindow.controller.bitrate = rates[currentIndex]
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 180
-                            Layout.preferredWidth: 220
-
-                            Label {
-                                font.weight: Font.DemiBold
-                                text: "Video codec"
-                            }
-                            ComboBox {
-                                Accessible.name: "Video codec"
-                                Layout.fillWidth: true
-                                objectName: "codecPicker"
-                                currentIndex: appWindow.controller.codecIndex
-                                model: ["H.264 · default", "H.265 - Experimental", "AV1 - Experimental"]
-                                onActivated: appWindow.controller.codecIndex = currentIndex
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: keyboardTab.checked ? 2 : 1
+                                    color: keyboardTab.checked ? appWindow.accent : theme.mid
+                                    opacity: keyboardTab.checked ? 1 : 0.35
+                                }
                             }
                         }
                     }
-                    Flow {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: implicitHeight
+                        spacing: 16
+                        visible: settingsTabs.currentIndex === 0
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columnSpacing: 18
+                            columns: 2
+                            enabled: !appWindow.controller.busy
+                            rowSpacing: 12
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 280
+                                Layout.preferredWidth: 280
+
+                                Label {
+                                    font.weight: Font.DemiBold
+                                    text: "Resolution"
+                                }
+                                ComboBox {
+                                    Accessible.name: "Stream resolution"
+                                    Layout.fillWidth: true
+                                    currentIndex: appWindow.controller.resolutionIndex
+                                    model: ["720p · 1280 × 720", "1080p · 1920 × 1080", "2560 × 1440 · Experimental", "3840 × 2160 · Experimental"]
+                                    objectName: "resolutionPicker"
+
+                                    onActivated: appWindow.controller.resolutionIndex = currentIndex
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 100
+                                Layout.preferredWidth: 120
+
+                                Label {
+                                    font.weight: Font.DemiBold
+                                    text: "Frame rate"
+                                }
+                                ComboBox {
+                                    Accessible.name: "Stream frame rate"
+                                    Layout.fillWidth: true
+                                    objectName: "frameRatePicker"
+                                    currentIndex: appWindow.controller.fpsIndex
+                                    model: ["30 FPS", "60 FPS", "120 FPS"]
+
+                                    onActivated: appWindow.controller.fpsIndex = currentIndex
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 220
+                                Layout.preferredWidth: 240
+
+                                Label {
+                                    font.weight: Font.DemiBold
+                                    text: "Quality / bitrate"
+                                }
+                                ComboBox {
+                                    id: bitratePicker
+
+                                    property var rates: appWindow.controller.bitrateChoices
+
+                                    Accessible.name: "Video bitrate"
+                                    Layout.fillWidth: true
+                                    objectName: "bitratePicker"
+                                    currentIndex: Math.max(0, rates.indexOf(appWindow.controller.bitrate))
+                                    model: rates.map(function(rate) { return (rate / 1000) + " Mbps" })
+
+                                    onActivated: appWindow.controller.bitrate = rates[currentIndex]
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 180
+                                Layout.preferredWidth: 220
+
+                                Label {
+                                    font.weight: Font.DemiBold
+                                    text: "Video codec"
+                                }
+                                ComboBox {
+                                    Accessible.name: "Video codec"
+                                    Layout.fillWidth: true
+                                    objectName: "codecPicker"
+                                    currentIndex: appWindow.controller.codecIndex
+                                    model: ["H.264 · default", "H.265 - Experimental", "AV1 - Experimental"]
+                                    onActivated: appWindow.controller.codecIndex = currentIndex
+                                }
+                            }
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: implicitHeight
+                            spacing: 20
+
+                            CheckBox {
+                                enabled: !appWindow.controller.busy
+                                checked: appWindow.controller.fullscreen
+                                text: "Fullscreen"
+
+                                onToggled: appWindow.controller.fullscreen = checked
+                            }
+                            CheckBox {
+                                enabled: !appWindow.controller.busy
+                                checked: appWindow.controller.relativeMouse
+                                text: "Relative mouse"
+
+                                onToggled: appWindow.controller.relativeMouse = checked
+                            }
+                            CheckBox {
+                                enabled: !appWindow.controller.busy
+                                checked: appWindow.controller.showStats
+                                text: "Show stream stats"
+
+                                onToggled: appWindow.controller.showStats = checked
+                            }
+                            CheckBox {
+                                objectName: "controlsHintCheckbox"
+                                enabled: !appWindow.controller.busy
+                                checked: appWindow.controller.showControlsHint
+                                text: "Stream controls hint"
+
+                                onToggled: appWindow.controller.showControlsHint = checked
+                            }
+                            CheckBox {
+                                objectName: "microphoneCheckbox"
+                                checked: appWindow.controller.microphoneEnabled
+                                enabled: !appWindow.controller.busy || (appWindow.controller.active && appWindow.controller.phase === "connected")
+                                text: "Send microphone"
+
+                                onToggled: appWindow.controller.setMicrophoneEnabled(checked)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "microphoneStatusLabel"
+                            text: appWindow.controller.microphoneStatus
+                            visible: appWindow.controller.microphoneEnabled || appWindow.controller.microphoneStatus !== "Microphone off"
+                            wrapMode: Text.WordWrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "microphonePrivacyNote"
+                            font.pixelSize: 13
+                            opacity: 0.8
+                            visible: appWindow.controller.microphoneEnabled
+                            text: "Unencrypted microphone audio. Enable only on a trusted network."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
                         enabled: !appWindow.controller.busy
-                        spacing: 20
+                        objectName: "modifierMappingSection"
+                        visible: settingsTabs.currentIndex === 1
+                        spacing: 8
 
-                        CheckBox {
-                            checked: appWindow.controller.fullscreen
-                            text: "Fullscreen"
-
-                            onToggled: appWindow.controller.fullscreen = checked
+                        Label {
+                            font.weight: Font.DemiBold
+                            text: "Mac keyboard mapping"
                         }
-                        CheckBox {
-                            checked: appWindow.controller.relativeMouse
-                            text: "Relative mouse"
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            columnSpacing: 18
+                            rowSpacing: 8
 
-                            onToggled: appWindow.controller.relativeMouse = checked
+                            Label {
+                                Layout.preferredWidth: 120
+                                text: "Command"
+                            }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                Accessible.name: "Windows modifier for Command"
+                                objectName: "commandModifierPicker"
+                                model: appWindow.modifierChoices
+                                currentIndex: appWindow.controller.commandModifier
+                                onActivated: appWindow.controller.setModifierMapping(0, currentIndex)
+                            }
+                            Label { text: "Option" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                Accessible.name: "Windows modifier for Option"
+                                objectName: "optionModifierPicker"
+                                model: appWindow.modifierChoices
+                                currentIndex: appWindow.controller.optionModifier
+                                onActivated: appWindow.controller.setModifierMapping(1, currentIndex)
+                            }
+                            Label { text: "Control" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                Accessible.name: "Windows modifier for Control"
+                                objectName: "controlModifierPicker"
+                                model: appWindow.modifierChoices
+                                currentIndex: appWindow.controller.controlModifier
+                                onActivated: appWindow.controller.setModifierMapping(2, currentIndex)
+                            }
                         }
-                        CheckBox {
-                            checked: appWindow.controller.showStats
-                            text: "Show stream stats"
-
-                            onToggled: appWindow.controller.showStats = checked
+                        Label {
+                            Layout.fillWidth: true
+                            font.pixelSize: 13
+                            opacity: 0.75
+                            text: "None sends no modifier. Choosing an assigned Windows key sets its other row to None."
+                            wrapMode: Text.WordWrap
                         }
                     }
                     Rectangle {
@@ -622,9 +794,29 @@ ApplicationWindow {
                         text: "Local stream controls: Control + Command + Shift + P"
                         wrapMode: Text.WordWrap
                     }
-                    Button {
-                        flat: true
+                    Basic.Button {
+                        id: controlsButton
+                        objectName: "controlsButton"
                         text: "Controls"
+                        horizontalPadding: 16
+                        verticalPadding: 8
+
+                        contentItem: Text {
+                            text: controlsButton.text
+                            font: controlsButton.font
+                            color: "white"
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        background: Rectangle {
+                            implicitWidth: 98
+                            implicitHeight: 36
+                            color: controlsButton.down ? "#303030" : (controlsButton.hovered ? "#242424" : "#111111")
+                            radius: 6
+                            border.width: controlsButton.visualFocus ? 2 : 1
+                            border.color: controlsButton.visualFocus ? appWindow.accent : "#5e5e5e"
+                        }
 
                         onClicked: controlsDialog.open()
                     }
@@ -751,15 +943,163 @@ ApplicationWindow {
     Dialog {
         id: controlsDialog
         anchors.centerIn: parent
+        focus: true
         modal: true
+        objectName: "controlsDialog"
         palette: appWindow.palette
-        standardButtons: Dialog.Close
-        title: "Mac stream controls"
+        title: "Controls · AntCloud Native " + Qt.application.version
         width: Math.min(540, appWindow.width - 40)
 
-        contentItem: Label {
-            text: "Windows modifiers\nCommand → Ctrl · Option → Alt · Control → Windows\n\nLocal shortcuts\nControl + Command + Shift + P: stream controls\nControl + Command + Shift + Z: release mouse / controls\nControl + Command + Shift + Q: disconnect stream\nControl + Command + Shift + X: toggle fullscreen\nControl + Command + Shift + S: toggle stats\nControl + Command + Shift + M: toggle mouse mode\nControl + Command + Shift + V: type Mac clipboard text (host support required)\n\nStats show native round-trip time, network-dropped video frames, FPS, received video bitrate, stream dimensions and provider-reported minutes left. Frame loss is not a packet-loss counter.\n\nFn is managed by macOS; a separate Windows Fn key is not guaranteed. Clipboard sync and file transfer are not included in this release."
-            wrapMode: Text.WordWrap
+        onOpened: {
+            controlsHelpViewport.contentY = 0;
+            controlsHelpScroll.forceActiveFocus();
+        }
+
+        contentItem: ScrollView {
+            id: controlsHelpScroll
+            objectName: "controlsHelpScroll"
+            implicitHeight: Math.min(controlsHelpColumn.implicitHeight, appWindow.height - 180)
+            contentWidth: availableWidth
+            clip: true
+            focusPolicy: Qt.StrongFocus
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+            Keys.priority: Keys.BeforeItem
+            Keys.onTabPressed: closeControls.forceActiveFocus(Qt.TabFocusReason)
+            Keys.onBacktabPressed: closeControls.forceActiveFocus(Qt.BacktabFocusReason)
+
+            Flickable {
+                id: controlsHelpViewport
+                contentWidth: width
+                contentHeight: controlsHelpColumn.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+
+                ColumnLayout {
+                    id: controlsHelpColumn
+                    width: controlsHelpViewport.width
+                    spacing: 16
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label { font.weight: Font.DemiBold; text: "Your keyboard mapping" }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "modifierControlsHelp"
+                            text: "Command → " + appWindow.modifierChoices[appWindow.controller.commandModifier]
+                                + "\nOption → " + appWindow.modifierChoices[appWindow.controller.optionModifier]
+                                + "\nControl → " + appWindow.modifierChoices[appWindow.controller.controlModifier]
+                            wrapMode: Text.WordWrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            font.pixelSize: 13
+                            opacity: 0.8
+                            objectName: "mappingRulesHelp"
+                            text: "Choose None, Ctrl, Alt or Windows key in the Keyboard tab before connecting. Assigning an occupied target clears its other row to None. Changes are saved for your next stream."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label { font.weight: Font.DemiBold; text: "Stream shortcuts" }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "Hold the physical Control + Command + Shift keys, then press a key below. These work with every mapping."
+                            wrapMode: Text.WordWrap
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 7
+
+                            Repeater {
+                                model: [
+                                    ["P", "Open stream controls"],
+                                    ["Q", "Stop stream and return to the app"],
+                                    ["Z", "Toggle mouse capture / open controls"],
+                                    ["X", "Toggle fullscreen"],
+                                    ["S", "Show or hide statistics"],
+                                    ["H", "Show or hide the stream controls hint"],
+                                    ["M", "Switch game / desktop mouse mode"],
+                                    ["B", "Toggle microphone"],
+                                    ["V", "Type Mac clipboard text"],
+                                    ["C", "Show or hide the desktop cursor"],
+                                    ["D", "Minimize the stream window"],
+                                    ["L", "Toggle desktop pointer confinement"],
+                                    ["K", "Toggle system keyboard capture"],
+                                    ["E", "Stop streaming and quit the app"]
+                                ]
+                                delegate: RowLayout {
+                                    id: shortcutRow
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 20
+
+                                    Label {
+                                        Layout.preferredWidth: 22
+                                        font.weight: Font.DemiBold
+                                        text: shortcutRow.modelData[0]
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: shortcutRow.modelData[1]
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label { font.weight: Font.DemiBold; text: "Clipboard typing" }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "Copy text on the Mac, focus a Windows text field, then use Control + Command + Shift + V. This requires host support; it sends text rather than synchronizing both clipboards."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label { font.weight: Font.DemiBold; text: "Stop or shut down" }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "shutdownControlsHelp"
+                            text: "Stop stream ends this Mac’s connection. To shut down the VM, save your Windows work, press Control + Command + Shift + P, choose Shutdown VM and confirm. Check the AntCloud dashboard for the final power state."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label { font.weight: Font.DemiBold; text: "Audio and microphone" }
+                        Label {
+                            Layout.fillWidth: true
+                            objectName: "microphoneHelp"
+                            text: "VM audio plays on your Mac. Enable Send microphone in Video before Connect or once connected. Allow Mac microphone access when prompted. Control + Command + Shift + B toggles it during streaming; it turns off when the stream ends."
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+            }
+        }
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
+            Button {
+                id: closeControls
+                objectName: "closeControls"
+                text: "Close"
+
+                Keys.priority: Keys.BeforeItem
+                Keys.onTabPressed: controlsHelpScroll.forceActiveFocus(Qt.TabFocusReason)
+                Keys.onBacktabPressed: controlsHelpScroll.forceActiveFocus(Qt.BacktabFocusReason)
+                Keys.onEnterPressed: clicked()
+                Keys.onReturnPressed: clicked()
+                onClicked: controlsDialog.close()
+            }
+            Item { Layout.preferredWidth: 12 }
         }
     }
     Dialog {

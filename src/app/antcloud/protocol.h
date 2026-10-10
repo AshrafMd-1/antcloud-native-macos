@@ -7,15 +7,31 @@
 #include <QRegularExpression>
 #include <cmath>
 #include <limits>
+#include <QVariantList>
+#include "modifiermapping.h"
 
 namespace AntCloud {
 constexpr int StartupTimeoutMs = 300000;
+constexpr int DefaultResolutionIndex = 1;
+inline ModifierMapping savedModifierMapping(const QVariantList& values) {
+    if (values.size() != 3) return {};
+    std::array<int, 3> targets{};
+    for (int row = 0; row < 3; ++row) {
+        bool valid;
+        targets[row] = values[row].toInt(&valid);
+        if (!valid) targets[row] = 0;
+    }
+    return ModifierMapping(targets);
+}
+inline QVariantList modifierMappingValues(const ModifierMapping& mapping) {
+    return {mapping.target(0), mapping.target(1), mapping.target(2)};
+}
 inline int savedResolutionIndex(int index, int schema) {
     if (schema < 2) {
         if (index == 2) return 1; // Schema 1 index 2 was 1440×900; migrate it to 1080p.
         if (index == 3 || index == 4) return index - 1;
     }
-    return index >= 0 && index <= 3 ? index : 0;
+    return index >= 0 && index <= 3 ? index : DefaultResolutionIndex;
 }
 constexpr int BitrateChoices[] = {2000, 3000, 4000, 6000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000};
 inline int savedBitrate(int bitrate) {
@@ -36,7 +52,7 @@ inline int accountRemainingMinutes(const QJsonObject& value) {
     return total > 0 && used >= 0 ? qMax(0, total - used) : -1;
 }
 inline bool validToken(const QString& token) {
-    static const QRegularExpression pattern("^[A-Za-z0-9_.~+/=-]{1,16384}$");
+    static const QRegularExpression pattern(QRegularExpression::anchoredPattern("[A-Za-z0-9_.~+/=-]{1,16384}"));
     return pattern.match(token).hasMatch();
 }
 inline int accountLimit(const QJsonObject& response) {

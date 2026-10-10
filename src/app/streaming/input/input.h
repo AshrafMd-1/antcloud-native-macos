@@ -5,6 +5,7 @@
 
 #include "SDL_compat.h"
 #include "antcloudcontrols.h"
+#include "antcloud/modifiermapping.h"
 
 struct GamepadState {
     SDL_GameController* controller;
@@ -175,6 +176,8 @@ private:
         KeyComboQuitAndExit,
         KeyComboToggleKeyboardGrab,
         KeyComboStreamControls,
+        KeyComboToggleMicrophone,
+        KeyComboToggleControlsHint,
         KeyComboMax
     };
 
@@ -226,6 +229,7 @@ private:
     int m_GamepadMask;
     GamepadState m_GamepadState[MAX_GAMEPADS];
     QSet<uint32_t> m_KeysDown;
+    const AntCloud::ModifierMapping m_MacModifiers;
     QSet<int> m_MouseButtonsDown;
     bool m_ResumeCaptureOnFocusGain = false;
     bool m_FakeMouseCaptureActive;

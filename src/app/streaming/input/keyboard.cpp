@@ -55,6 +55,17 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         showLocalControls();
         break;
 
+    case KeyComboToggleMicrophone:
+        AntCloud::StreamBridge::toggleMicrophone();
+        break;
+
+    case KeyComboToggleControlsHint: {
+        bool enabled = !AntCloud::StreamBridge::controlsHint();
+        AntCloud::StreamBridge::setControlsHint(enabled);
+        Session::get()->getOverlayManager().setControlsHint(enabled);
+        break;
+    }
+
     case KeyComboToggleFullScreen:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected full-screen toggle combo");
@@ -202,13 +213,13 @@ bool SdlInputHandler::handleLocalControlEvent(const SDL_Event& event)
 {
     if (!m_LocalControls.handles(event)) return false;
     // Keep local capture/stop shortcuts available while the controls own focus.
-    if (event.type == SDL_KEYDOWN && (event.key.keysym.mod & KMOD_CTRL) &&
+    if (event.type == SDL_KEYDOWN &&
 #ifdef Q_OS_DARWIN
-        (event.key.keysym.mod & KMOD_GUI) &&
+        AntCloudInput::isMacLocalChord(event.key.keysym.mod)
 #else
-        (event.key.keysym.mod & KMOD_ALT) &&
+        (event.key.keysym.mod & KMOD_CTRL) && (event.key.keysym.mod & KMOD_ALT) && (event.key.keysym.mod & KMOD_SHIFT)
 #endif
-        (event.key.keysym.mod & KMOD_SHIFT)) {
+        ) {
         SDL_KeyboardEvent key = event.key;
         handleKeyEvent(&key);
         return true;
@@ -249,13 +260,12 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
 
     // Check for our special key combos
     if ((event->state == SDL_PRESSED) &&
-            (event->keysym.mod & KMOD_CTRL) &&
 #ifdef Q_OS_DARWIN
-            (event->keysym.mod & KMOD_GUI) && // Physical Command; remote Ctrl.
+            AntCloudInput::isMacLocalChord(event->keysym.mod)
 #else
-            (event->keysym.mod & KMOD_ALT) &&
+            (event->keysym.mod & KMOD_CTRL) && (event->keysym.mod & KMOD_ALT) && (event->keysym.mod & KMOD_SHIFT)
 #endif
-            (event->keysym.mod & KMOD_SHIFT)) {
+            ) {
         // First we test the SDLK combos for matches,
         // that way we ensure that latin keyboard users
         // can match to the key they see on their keyboards.
@@ -289,7 +299,8 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
 
 #ifdef Q_OS_DARWIN
     // Translate only after checking local escape/toggle chords in physical keys.
-    SDL_KeyboardEvent remoteEvent = AntCloudInput::mapMacModifiers(*event);
+    SDL_KeyboardEvent remoteEvent = AntCloudInput::mapMacModifiers(*event, m_MacModifiers);
+    if (remoteEvent.keysym.scancode == SDL_SCANCODE_UNKNOWN) return;
     event = &remoteEvent;
 #endif
 

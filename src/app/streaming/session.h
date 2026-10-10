@@ -136,6 +136,9 @@ signals:
 
     void displayLaunchError(QString text);
 
+    // Safe native status for provider UI; the raw host message stays in the engine.
+    void nativeHostRequestFailed(int code, bool transportFailure);
+
     void quitStarting();
 
     void sessionFinished(int portTestResult);

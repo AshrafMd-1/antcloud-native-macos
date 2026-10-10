@@ -730,6 +730,7 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
 
         // Allow the renderer to perform final preparations for rendering
         m_FrontendRenderer->prepareToRender();
+        Session::get()->getOverlayManager().setOverlayTextUpdated(Overlay::OverlayControlsHint);
 
         // Only create the decoder thread when instantiating the decoder for real. It will use APIs from
         // moonlight-common-c that can only be legally called with an established connection.
@@ -2227,4 +2228,3 @@ void FFmpegVideoDecoder::renderFrameOnMainThread()
 {
     m_Pacer->renderOnMainThread();
 }
-

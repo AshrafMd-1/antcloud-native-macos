@@ -656,21 +656,9 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
 
     newTexture->UnlockRect(0);
 
-    SDL_FRect renderRect = {};
-
-    if (type == Overlay::OverlayStatusUpdate) {
-        // Bottom Left
-        renderRect.x = 0;
-        renderRect.y = m_DisplayHeight - newSurface->h;
-    }
-    else if (type == Overlay::OverlayDebug) {
-        // Top left
-        renderRect.x = 0;
-        renderRect.y = 0;
-    }
-
-    renderRect.w = newSurface->w;
-    renderRect.h = newSurface->h;
+    SDL_Rect position = Overlay::OverlayManager::overlayRect(type, m_DisplayWidth, m_DisplayHeight,
+                                                            newSurface->w, newSurface->h);
+    SDL_FRect renderRect = {(float)position.x, (float)position.y, (float)position.w, (float)position.h};
 
     // The surface is no longer required
     SDL_FreeSurface(newSurface);

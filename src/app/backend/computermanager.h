@@ -156,6 +156,11 @@ public:
         }
     }
 
+    bool isActiveThread(const QThread* thread) const
+    {
+        return m_ActiveThread == thread;
+    }
+
     bool isActive()
     {
         cleanInactiveList();
@@ -211,6 +216,7 @@ class ComputerManager : public QObject
 {
     Q_OBJECT
 
+    friend class PcMonitorThread;
     friend class DeferredHostDeletionTask;
     friend class PendingAddTask;
     friend class PendingPairingTask;
@@ -262,6 +268,7 @@ private slots:
     void handleMdnsServiceResolved(MdnsPendingComputer* computer, QVector<QHostAddress>& addresses);
 
 private:
+    bool isCurrentPollingThread(const QString& uuid, NvComputer* computer, const QThread* thread);
     void saveHosts();
 
     void saveHost(NvComputer* computer);

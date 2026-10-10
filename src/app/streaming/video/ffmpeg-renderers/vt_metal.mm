@@ -527,20 +527,9 @@ public:
             SDL_AtomicUnlock(&m_OverlayLock);
 
             if (overlayTexture) {
-                SDL_FRect renderRect = {};
-                if (i == Overlay::OverlayStatusUpdate) {
-                    // Bottom Left
-                    renderRect.x = 0;
-                    renderRect.y = 0;
-                }
-                else if (i == Overlay::OverlayDebug) {
-                    // Top left
-                    renderRect.x = 0;
-                    renderRect.y = m_LastDrawableHeight - overlayTexture.height;
-                }
-
-                renderRect.w = overlayTexture.width;
-                renderRect.h = overlayTexture.height;
+                SDL_Rect position = Overlay::OverlayManager::overlayRect(static_cast<Overlay::OverlayType>(i),
+                    m_LastDrawableWidth, m_LastDrawableHeight, overlayTexture.width, overlayTexture.height, true);
+                SDL_FRect renderRect = {(float)position.x, (float)position.y, (float)position.w, (float)position.h};
 
                 // Convert screen space to normalized device coordinates
                 StreamUtils::screenSpaceToNormalizedDeviceCoords(&renderRect, m_LastDrawableWidth, m_LastDrawableHeight);

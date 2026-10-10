@@ -37,7 +37,14 @@ python3 tools/fetch_sdk.py
 bash Test.command --core-only
 antcloud_build="$PWD/build/mac-$(uname -m)"
 mkdir -p "$antcloud_build" dist
-(cd "$antcloud_build" && "$antcloud_qmake" "$PWD/../../src/moonlight-qt.pro" QMAKE_APPLE_DEVICE_ARCHS="$(uname -m)" -after QMAKE_MACOSX_DEPLOYMENT_TARGET="$antcloud_macos_target" && make qmake_all && make -j4 release)
+(
+  cd "$antcloud_build"
+  "$antcloud_qmake" "$PWD/../../src/moonlight-qt.pro" QMAKE_APPLE_DEVICE_ARCHS="$(uname -m)" -after QMAKE_MACOSX_DEPLOYMENT_TARGET="$antcloud_macos_target"
+  make qmake_all
+  # qmake's bundle plist rule has no template prerequisite on incremental builds.
+  rm -f app/Moonlight.app/Contents/Info.plist
+  make -j4 release
+)
 "$antcloud_deploy" "$antcloud_build/app/Moonlight.app" -qmldir="$PWD/src/app/gui" -no-codesign
 antcloud_staged="$PWD/dist/AntCloudNative-new.app"
 [[ ! -e "$antcloud_staged" && ! -L "$antcloud_staged" ]] || { echo 'Rename the unfinished dist/AntCloudNative-new.app, then retry.'; exit 1; }
@@ -56,6 +63,16 @@ done
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $antcloud_version" "$antcloud_staged/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $antcloud_version" "$antcloud_staged/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $antcloud_macos_target" "$antcloud_staged/Contents/Info.plist"
+python3 - "$antcloud_staged/Contents/Info.plist" "$PWD/src/app/Info.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as file:
+    bundled = plistlib.load(file)
+with open(sys.argv[2], 'rb') as file:
+    source = plistlib.load(file)
+key = 'NSMicrophoneUsageDescription'
+if not source.get(key) or bundled.get(key) != source[key]:
+    raise SystemExit('Packaged microphone usage description is missing or stale; the staged app was not installed.')
+PY
 codesign --force --deep --sign - "$antcloud_staged"
 codesign --verify --deep --strict --verbose=2 "$antcloud_staged"
 "$antcloud_staged/Contents/MacOS/Moonlight" --help >/dev/null

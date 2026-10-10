@@ -1,25 +1,40 @@
 // AntCloud Native additions, GPL-3.0-or-later, 2026.
 #pragma once
 #include "SDL_compat.h"
+#include "antcloud/modifiermapping.h"
 
 namespace AntCloudInput {
-// Only remote SDL events are translated. Physical modifiers still identify the
-// client's escape/toggle combinations before this function is called.
-inline SDL_KeyboardEvent mapMacModifiers(SDL_KeyboardEvent event)
+inline bool isMacLocalChord(Uint16 modifiers) {
+    return (modifiers & KMOD_CTRL) && (modifiers & KMOD_GUI) && (modifiers & KMOD_SHIFT);
+}
+
+// Translate a copy only after checking local controls in physical keys.
+inline SDL_KeyboardEvent mapMacModifiers(SDL_KeyboardEvent event,
+                                        const AntCloud::ModifierMapping& mapping = {})
 {
-    switch (event.keysym.scancode) {
-    case SDL_SCANCODE_LGUI: event.keysym.scancode = SDL_SCANCODE_LCTRL; break;
-    case SDL_SCANCODE_RGUI: event.keysym.scancode = SDL_SCANCODE_RCTRL; break;
-    case SDL_SCANCODE_LCTRL: event.keysym.scancode = SDL_SCANCODE_LGUI; break;
-    case SDL_SCANCODE_RCTRL: event.keysym.scancode = SDL_SCANCODE_RGUI; break;
-    default: break;
+    const SDL_Scancode physicalKeys[3][2] = {
+        {SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI},
+        {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT},
+        {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}
+    };
+    const SDL_Scancode remoteKeys[4][2] = {
+        {SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN},
+        {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL},
+        {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT},
+        {SDL_SCANCODE_LGUI, SDL_SCANCODE_RGUI}
+    };
+    const Uint16 physicalFlags[3][2] = {{KMOD_LGUI, KMOD_RGUI}, {KMOD_LALT, KMOD_RALT}, {KMOD_LCTRL, KMOD_RCTRL}};
+    const Uint16 remoteFlags[4][2] = {{0, 0}, {KMOD_LCTRL, KMOD_RCTRL}, {KMOD_LALT, KMOD_RALT}, {KMOD_LGUI, KMOD_RGUI}};
+    const auto scancode = event.keysym.scancode;
+    const auto modifiers = event.keysym.mod;
+    event.keysym.mod &= ~(KMOD_CTRL | KMOD_ALT | KMOD_GUI);
+    for (int row = 0; row < 3; ++row) {
+        const int target = mapping.target(row);
+        for (int side = 0; side < 2; ++side) {
+            if (scancode == physicalKeys[row][side]) event.keysym.scancode = remoteKeys[target][side];
+            if (modifiers & physicalFlags[row][side]) event.keysym.mod |= remoteFlags[target][side];
+        }
     }
-    const auto physical = event.keysym.mod;
-    event.keysym.mod &= ~(KMOD_CTRL | KMOD_GUI);
-    if (physical & KMOD_LGUI) event.keysym.mod |= KMOD_LCTRL;
-    if (physical & KMOD_RGUI) event.keysym.mod |= KMOD_RCTRL;
-    if (physical & KMOD_LCTRL) event.keysym.mod |= KMOD_LGUI;
-    if (physical & KMOD_RCTRL) event.keysym.mod |= KMOD_RGUI;
     return event;
 }
 }

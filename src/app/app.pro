@@ -167,6 +167,8 @@ macx {
 
 SOURCES += \
     antcloud/controller.cpp \
+    antcloud/microphone.cpp \
+    antcloud/microphoneaudio.cpp \
     antcloud/providerworker.cpp \
     antcloud/tokenstore.cpp \
     backend/nvaddress.cpp \
@@ -211,6 +213,9 @@ SOURCES += \
 
 HEADERS += \
     antcloud/controller.h \
+    antcloud/microphone.h \
+    antcloud/microphoneaudio.h \
+    antcloud/microphonecapture.h \
     antcloud/providerworker.h \
     antcloud/protocol.h \
     antcloud/tokenstore.h \
@@ -416,12 +421,16 @@ macx {
     message(VideoToolbox renderer selected)
 
     SOURCES += \
+        antcloud/microphonecapture_mac.mm \
         streaming/video/ffmpeg-renderers/vt_base.mm \
         streaming/video/ffmpeg-renderers/vt_avsamplelayer.mm \
         streaming/video/ffmpeg-renderers/vt_metal.mm
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/vt.h
+}
+!macx {
+    SOURCES += antcloud/microphonecapture_stub.cpp
 }
 discord-rpc {
     message(Discord integration enabled)

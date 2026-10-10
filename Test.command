@@ -20,7 +20,7 @@ antcloud_run_test() {
     "$@"
   fi
 }
-for antcloud_test in protocol input_stats tests controls seeker bandwidth; do
+for antcloud_test in protocol input_stats tests controls seeker bandwidth microphone; do
   antcloud_folder="$antcloud_root/build/test-$antcloud_test"
   mkdir -p "$antcloud_folder"
   (cd "$antcloud_folder" && "$antcloud_qmake" "$antcloud_root/src/tests/antcloud/$antcloud_test.pro" "${antcloud_qmake_args[@]}" && make -j3 && SDL_VIDEODRIVER=dummy antcloud_run_test "./$antcloud_test")

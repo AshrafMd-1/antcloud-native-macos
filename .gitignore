@@ -1,6 +1,7 @@
 # Local builds and packaged apps
 /build/
 /dist/
+/.omx/
 /src/libs/mac/
 /src/libs/windows/
 /src/libs/steamlink/

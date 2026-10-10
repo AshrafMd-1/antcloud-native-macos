@@ -1,5 +1,6 @@
 #include "overlaymanager.h"
 #include "path.h"
+#include "antcloud/streambridge.h"
 
 using namespace Overlay;
 
@@ -14,6 +15,10 @@ OverlayManager::OverlayManager() :
 
     m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xCC, 0x00, 0x00, 0xFF};
     m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 36;
+
+    m_Overlays[OverlayType::OverlayControlsHint].color = {245, 245, 245, 255};
+    m_Overlays[OverlayType::OverlayControlsHint].fontSize = m_Overlays[OverlayType::OverlayDebug].fontSize;
+    setControlsHint(AntCloud::StreamBridge::enabled() && AntCloud::StreamBridge::controlsHint());
 
     // While TTF will usually not be initialized here, it is valid for that not to
     // be the case, since Session destruction is deferred and could overlap with
@@ -116,6 +121,13 @@ void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
     m_Renderer = renderer;
 }
 
+void OverlayManager::setControlsHint(bool enabled)
+{
+    if (isOverlayEnabled(OverlayControlsHint) == enabled) return;
+    if (enabled) updateOverlayText(OverlayControlsHint, "Ctrl + Cmd + Shift + P");
+    setOverlayState(OverlayControlsHint, enabled);
+}
+
 void OverlayManager::notifyOverlayUpdated(OverlayType type)
 {
     if (m_Renderer == nullptr) {
@@ -207,5 +219,3 @@ SDL_Surface* OverlayManager::RenderTextOutlinedWrapped(TTF_Font* font, const cha
     SDL_FreeSurface(textSurface);
     return outlineSurface;
 }
-
-

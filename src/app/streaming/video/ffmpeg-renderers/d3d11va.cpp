@@ -1180,21 +1180,8 @@ void D3D11VARenderer::notifyOverlayUpdated(Overlay::OverlayType type)
 
 bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int width, int height, ComPtr<ID3D11Buffer>& newVertexBuffer)
 {
-    SDL_FRect renderRect = {};
-
-    if (type == Overlay::OverlayStatusUpdate) {
-        // Bottom Left
-        renderRect.x = 0;
-        renderRect.y = 0;
-    }
-    else if (type == Overlay::OverlayDebug) {
-        // Top left
-        renderRect.x = 0;
-        renderRect.y = m_DisplayHeight - height;
-    }
-
-    renderRect.w = width;
-    renderRect.h = height;
+    SDL_Rect position = Overlay::OverlayManager::overlayRect(type, m_DisplayWidth, m_DisplayHeight, width, height, true);
+    SDL_FRect renderRect = {(float)position.x, (float)position.y, (float)position.w, (float)position.h};
 
     // Convert screen space to normalized device coordinates
     StreamUtils::screenSpaceToNormalizedDeviceCoords(&renderRect, m_DisplayWidth, m_DisplayHeight);

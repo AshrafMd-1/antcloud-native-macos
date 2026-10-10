@@ -518,10 +518,20 @@ NvHTTP::openConnection(QUrl baseUrl,
 #endif
 
     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
+    const auto pairingGeneration = AntCloud::StreamBridge::pairingGeneration();
     QNetworkReply* reply = m_Nam->get(request);
     if (!m_ProviderPairingPin.isEmpty() && command == "pair" && arguments.contains("phrase=getservercert")) {
         const QString pin = m_ProviderPairingPin;
-        connect(reply, &QNetworkReply::requestSent, reply, [pin] { AntCloud::StreamBridge::pair(pin); });
+        connect(reply, &QNetworkReply::requestSent, reply,
+                [reply, pin, pairingGeneration, scheduled = false]() mutable {
+            if (scheduled) return;
+            scheduled = true;
+            // A transport write is earlier than the host's pending challenge.
+            // Give the host one settling interval; never resubmit the provider PIN.
+            QTimer::singleShot(1000, reply, [reply, pin, pairingGeneration] {
+                if (!reply->isFinished()) AntCloud::StreamBridge::pair(pin, pairingGeneration);
+            });
+        });
         m_ProviderPairingPin.clear();
     }
 
