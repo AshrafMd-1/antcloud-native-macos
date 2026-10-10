@@ -20,6 +20,8 @@ The app targets Apple Silicon and macOS 26 or newer. It is a personal project an
 
 ## Interface
 
+![Login Screen of AntCloud Native](assets/screenshots/login.png)
+
 ![Video settings in AntCloud Native](assets/screenshots/video.png)
 
 ![Mac keyboard mapping in AntCloud Native](assets/screenshots/keyboard.png)
