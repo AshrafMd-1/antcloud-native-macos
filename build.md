@@ -2,13 +2,13 @@
 
 ## Install the packaged app
 
-The AntCloud Native 2.0.1 Mac package targets **Apple Silicon and macOS 26 or newer**.
+The AntCloud Native 2.0.2 Mac package targets **Apple Silicon and macOS 26 or newer**.
 
-1. Download `AntCloudNative-2.0.1-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases).
+1. Download `AntCloudNative-2.0.2-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases).
 2. Extract the ZIP.
 3. Quit any running AntCloud Native app.
 4. Move `AntCloudNative.app` to Applications, replacing an older copy if needed.
-5. Open the app and check **Help → About** for version 2.0.1.
+5. Open the app and check **Help → About** for version 2.0.2.
 
 The app bundle includes its runtime libraries. Homebrew, Qt and Python are required only when building from source.
 
@@ -23,7 +23,7 @@ Install:
 - Apple command-line developer tools.
 - [Homebrew](https://brew.sh/).
 - Python 3.10 or newer.
-- Qt 6.11 or newer modules: `qtbase`, `qtdeclarative`, `qtsvg`, `qttools` and `qtwebsockets`.
+- Qt 6.11 or newer modules: `qtbase`, `qtdeclarative`, `qtsvg`, `qttools` and `qtwebsockets`. The 2.0.2 package was built and checked with Homebrew Qt 6.12.0.
 
 Install Apple's tools with:
 
@@ -35,7 +35,7 @@ The build script reuses installed compatible Homebrew Qt modules and installs a 
 
 ## Build from source
 
-Extract `AntCloudNative-2.0.1-source.zip` or clone the [repository](https://github.com/AshrafMd-1/antcloud-native-macos). Run this from the repository root:
+Extract `AntCloudNative-2.0.2-source.zip` or clone the [repository](https://github.com/AshrafMd-1/antcloud-native-macos). Run this from the repository root:
 
 ```bash
 bash Build-Mac.command
@@ -108,7 +108,7 @@ dist/AntCloudNative.app/Contents/MacOS/Moonlight --version
 /usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/AntCloudNative.app/Contents/Info.plist
 ```
 
-Both bundle version fields and the executable must report `2.0.1`. The minimum system version must match the macOS major version used for the build.
+Both bundle version fields and the executable must report `2.0.2`. The minimum system version must match the macOS major version used for the build.
 
 Fixtures do not prove live provider login, Keychain behavior, native pairing, VM power control, optional codec support, VideoToolbox performance, microphone permission or a VM's available display modes. Test those behaviors with an authorized account and save Windows work before testing Shutdown VM.
 

@@ -69,7 +69,7 @@ public slots:
                             auto user = response.value("user").toObject();
                             user.insert("refreshToken", "fixture.refresh.token"); response.insert("user", user);
                         }
-                    } else if (path == "/api/users/refresh") {
+                    } else if (path == "/api/users/refreshToken") {
                         ++refreshes; status = refreshStatus.load();
                         if (!header.startsWith("GET ") || headerValue(header, "refresh") != "JWT fixture.refresh.token" || size)
                             wrongAuth = true;
@@ -84,22 +84,25 @@ public slots:
                         const bool rotated = authorization == "JWT fixture.rotated.token";
                         if (!rotated && authorization != "JWT fixture.access.token"
                             && authorization != "JWT " + ExpiredAccessToken.toUtf8()) wrongAuth = true;
-                        if (path == "/api/vm/getVmIp") { ++lookups; response = {{"vmip", "192.0.2.10"}}; }
-                        else if (path == "/api/vm/checkConnectionStatus") {
+                        if (path == "/api/vm/getControllVmIp") { ++lookups; response = {{"vmip", "192.0.2.10"}}; }
+                        else if (path == "/api/vm/checkVmConnectionStatus") {
                             ++checks;
                             status = ready ? 200 : 400;
                             response = {{"connected", ready.load()}};
                             if (malformed) response = {{"connected", "true"}};
-                        } else if (path == "/api/vm/vmauth") {
+                        } else if (path == "/api/vm/vmAuthentication") {
                             ++pins;
                             status = pinStatus.load();
                             const auto body = QJsonDocument::fromJson(bytes.mid(split + 4, size)).object();
-                            if (body.value("pin") != "1234") wrongAuth = true;
+                            if (body.value("code") != "1234") wrongAuth = true;
                             response = {{"message", "success"}, {"data", QJsonObject{{"status", true}}}};
-                        } else if (path == "/api/users/me") {
+                        } else if (path == "/api/users") {
                             ++accountReads; status = accountStatus.load();
-                            response = {{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"},
-                                {"totalTimeMonth", accountTotal.load()}, {"timeUsedMonth", accountUsed.load()}}}};
+                            // The provider serves the signed-in account as a paginated list.
+                            const QJsonObject listed{{"currentPlan", "pro"}, {"resolution", "1080"},
+                                {"totalTimeMonth", accountTotal.load()}, {"timeUsedMonth", accountUsed.load()}};
+                            response.insert("docs", QJsonArray{listed}); response.insert("totalDocs", 1);
+                            response.insert("limit", 10); response.insert("page", 1);
                             if (expiredAccess && !rotated) {
                                 status = expiredStatus.load(); response = {{"message", "Token Expired"}};
                             }
@@ -111,9 +114,9 @@ public slots:
                         socket->write("HTTP/1.1 " + QByteArray::number(status) + " Test\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
                         socket->disconnectFromHost();
                     };
-                    if (path == "/api/users/me" && accountDelayMs > 0)
+                    if (path == "/api/users" && accountDelayMs > 0)
                         QTimer::singleShot(accountDelayMs.load(), socket, sendResponse);
-                    else if (path == "/api/users/refresh" && refreshDelayMs > 0)
+                    else if (path == "/api/users/refreshToken" && refreshDelayMs > 0)
                         QTimer::singleShot(refreshDelayMs.load(), socket, sendResponse);
                     else sendResponse();
                 });
@@ -464,8 +467,9 @@ private slots:
         std::atomic<int> completed{0};
         QMetaObject::invokeMethod(worker, [this, &completed] {
             worker->m_RefreshToken = "fixture.refresh.token";
-            for (int i = 0; i < 2; ++i) worker->request("/api/users/me", {}, false, false,
-                [&completed](int status, const QJsonObject& value) { if (status == 200 && accountLimit(value)) ++completed; });
+            for (int i = 0; i < 2; ++i) worker->request("/api/users", {}, false, false,
+                [&completed](int status, const QJsonObject& value) {
+                    if (status == 200 && accountLimit(accountResponse(value))) ++completed; });
         }, Qt::QueuedConnection);
         QTRY_COMPARE_WITH_TIMEOUT(completed.load(), 2, 3000);
         QCOMPARE(fixture->refreshes.load(), 1); QCOMPARE(fixture->accountReads.load(), 4); QVERIFY(!fixture->wrongAuth);

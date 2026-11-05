@@ -2,7 +2,7 @@
 
 ## Project contract
 
-AntCloud Native is an unofficial native macOS client for AntCloud Windows VMs. It uses Qt for account and settings UI, a dedicated provider worker for AntCloud networking, and the Moonlight 6.2.0 SDL engine for streaming. The production version is **2.0.1**.
+AntCloud Native is an unofficial native macOS client for AntCloud Windows VMs. It uses Qt for account and settings UI, a dedicated provider worker for AntCloud networking, and the Moonlight 6.2.0 SDL engine for streaming. The production version is **2.0.2**.
 
 Read [README.md](README.md), [build.md](build.md) and `source-provenance.json` before changing behavior. Then inspect the relevant source and tests.
 
@@ -80,7 +80,15 @@ Clear stale errors and notices when a new attempt begins. Successful video clear
 
 Passwords are transient. Remember access and refresh tokens together in a device-local Keychain item. Keep backward compatibility with a legacy raw access-token value.
 
-Renew through `GET /api/users/refresh` with `refresh: JWT <refreshToken>`. Validate both rotated tokens before adopting them. Coalesce concurrent renewal and retry only authenticated reads once; never replay pairing, shutdown or another mutation. Authentication and session generations must reject stale replies.
+Renew through `GET /api/users/refreshToken` with `refresh: JWT <refreshToken>`. Validate both rotated tokens before adopting them. Coalesce concurrent renewal and retry only authenticated reads once; never replay pairing, shutdown or another mutation. Authentication and session generations must reject stale replies.
+
+Provider routes and bodies change independently of this app, so keep them in the named constants in `providerworker.cpp` and re-check them against a current provider client before assuming a login or pairing fault. The current contract is:
+
+- `GET /api/users` returns the signed-in account as a paginated `{docs: [user], totalDocs, …}` list. Normalize it through `accountResponse()` rather than reading `user` directly; the login reply still uses `{user: {...}}`.
+- `GET /api/vm/getControllVmIp` and `GET /api/vm/checkVmConnectionStatus` return `vmip` and `connected`.
+- `POST /api/vm/vmAuthentication` takes `{"code": "<pin>"}`. A `{"pin": …}` body is forwarded to the VM agent and rejected with HTTP 400.
+
+A pairing reply proves the provider forwarded the request, not that the native pairing finished. Former names for these routes (`/api/users/me`, `/api/users/refresh`, `/api/vm/getVmIp`, `/api/vm/checkConnectionStatus`, `/api/vm/vmauth`) answer 404 or 403; a saved login that silently fails to validate usually means a route was renamed again.
 
 An expired JWT claim can trigger authenticated preflight. It never establishes login. Temporary validation or renewal failures keep saved credentials. Explicit sign-out requests Keychain deletion and reports a storage failure.
 
@@ -247,16 +255,18 @@ Create versioned source and Mac app ZIPs in `dist/`. Verify:
 - minimum macOS target;
 - QML modules and microphone usage description;
 - deep strict signature verification on the extracted app; and
-- only the 2.0.1 app and release artifacts remain in `dist/`.
+- only the 2.0.2 app and release artifacts remain in `dist/`.
 
 Local packages are ad-hoc signed. Developer ID signing, notarization and publication are separate operations and require separate evidence.
 
 ## Verified release behavior
 
-The 2.0.1 Mac fixture suite passes six SDK checks, standalone protocol/input/statistics assertions, and 139 Qt test rows: provider 47, controls 9, seeker 18, bandwidth 5, microphone 14, production Controller settings 5 and UI 41. The controls fixtures cover the measured one-line statistics layout at the stable budget and narrower viewport sizes. The real Controller fixture covers immediate saves, reloads, shortcut delivery after Stop, stale generations and microphone preference notification after a local failure.
+The 2.0.2 Mac fixture suite passes six SDK checks, standalone protocol/input/statistics assertions, and 139 Qt test rows: provider 47, controls 9, seeker 18, bandwidth 5, microphone 14, production Controller settings 5 and UI 41. The controls fixtures cover the measured one-line statistics layout at the stable budget and narrower viewport sizes. The real Controller fixture covers immediate saves, reloads, shortcut delivery after Stop, stale generations and microphone preference notification after a local failure.
 
 QML lint, shell/Python syntax, local documentation links and whitespace checks pass. Actual fixture screenshots verify single-line statistics beside the controls hint and the exact “Shutdown requested.” result. Independent correctness/security and architecture reviews report no unresolved blockers.
 
-The full Apple Silicon build passes deployment, executable and bundle version checks, the microphone usage description and strict deep ad-hoc signature verification. The preferred libplacebo renderer and Metal, SDL and AppKit fallbacks compile in the Mac build. The package targets macOS 26.0 with Qt 6.11.2. The macOS 27 SDK produces Qt’s compatibility warning; these checks do not prove runtime performance on other hardware or targets.
+The full Apple Silicon build passes deployment, executable and bundle version checks, the microphone usage description and strict deep ad-hoc signature verification. The preferred libplacebo renderer and Metal, SDL and AppKit fallbacks compile in the Mac build. The package targets macOS 26.0 with Qt 6.12.0. The macOS 27 SDK produces Qt’s compatibility warning; these checks do not prove runtime performance on other hardware or targets.
 
-These fixtures isolate accounts, Keychain and microphone devices. Live provider renewal, VM power, display/codec availability, actual Mac permission/devices and hardware performance require target-Mac verification; a passing fixture does not establish them.
+A target-Mac run against the live service completed saved-login restore, quota read, token renewal, VM start, host discovery, pairing and the Desktop stream with 2.0.2. That run only establishes the routes and the pairing field listed above; VM power state, optional codecs, display modes, microphone devices and hardware performance still need their own target-Mac evidence.
+
+These fixtures isolate accounts, Keychain and microphone devices. VM power state, display/codec availability, actual Mac permission/devices and hardware performance still require their own target-Mac verification; a passing fixture does not establish them.

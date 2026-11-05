@@ -7,6 +7,13 @@
 
 namespace AntCloud {
 namespace {
+// Provider routes as served today. The provider renamed the authenticated reads and
+// mutations; the old names answer 404 or 403, which surfaced as a rejected login.
+const QString ProfilePath = QStringLiteral("/api/users");
+const QString RefreshPath = QStringLiteral("/api/users/refreshToken");
+const QString VmIpPath = QStringLiteral("/api/vm/getControllVmIp");
+const QString VmStatusPath = QStringLiteral("/api/vm/checkVmConnectionStatus");
+const QString VmAuthPath = QStringLiteral("/api/vm/vmAuthentication");
 bool accessExpired(int status, const QJsonObject& value) {
     const QString message = value.value("message").toString();
     return status == 401 || message == "Token Expired" || message == "Session Expired";
@@ -54,7 +61,7 @@ void ProviderWorker::request(const QString& path, const QJsonObject& body, bool 
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     request.setTransferTimeout(20000);
     request.setRawHeader("Accept", "application/json");
-    if (path == "/api/users/refresh") request.setRawHeader("refresh", "JWT " + m_RefreshToken.toUtf8());
+    if (path == RefreshPath) request.setRawHeader("refresh", "JWT " + m_RefreshToken.toUtf8());
     else if (!m_Token.isEmpty()) request.setRawHeader("Authorization", "JWT " + m_Token.toUtf8());
     QByteArray payload;
     if (post) {
@@ -80,7 +87,7 @@ void ProviderWorker::request(const QString& path, const QJsonObject& body, bool 
         QJsonObject value;
         if (bytes.size() <= 1024 * 1024 && error.error == QJsonParseError::NoError && doc.isObject()) value = doc.object();
         else status = status >= 400 ? status : 0;
-        if (!post && allowRenewal && path != "/api/users/refresh" && accessExpired(status, value) && validToken(m_RefreshToken)) {
+        if (!post && allowRenewal && path != RefreshPath && accessExpired(status, value) && validToken(m_RefreshToken)) {
             if (tokenRevision != m_TokenRevision) {
                 this->request(path, {}, false, session, callback, false); return;
             }
@@ -99,7 +106,7 @@ void ProviderWorker::renewCredentials(std::function<void(RenewalResult)> callbac
     m_RenewalWaiters.append(std::move(callback));
     if (m_RenewalPending) return;
     m_RenewalPending = true;
-    request("/api/users/refresh", {}, false, false, [this](int status, const QJsonObject& value) {
+    request(RefreshPath, {}, false, false, [this](int status, const QJsonObject& value) {
         m_RenewalPending = false;
         RenewalResult result = RenewalResult::TemporaryFailure;
         const QString access = value.value("accessToken").toString(), refresh = value.value("refreshToken").toString();
@@ -128,7 +135,8 @@ void ProviderWorker::restore() {
 
 void ProviderWorker::authenticateToken(const QString& token, const QString& refreshToken, bool remember) {
     resetAccount(); m_Token = token; m_RefreshToken = refreshToken; m_Remember = remember;
-    request("/api/users/me", {}, false, false, [this](int status, const QJsonObject& value) {
+    request(ProfilePath, {}, false, false, [this](int status, QJsonObject value) {
+        value = accountResponse(value);
         if (credentialsRejected(status, value)) {
             QString error; TokenStore::clear(error); m_Token.clear(); m_RefreshToken.clear();
             emit account(false, 0, error);
@@ -185,7 +193,8 @@ void ProviderWorker::refreshRemainingMinutes() {
     if (m_AccountRefreshPending) { m_AccountRefreshAgain = true; return; }
     m_AccountRefreshPending = true;
     const int generation = m_Generation, revision = m_TimeRevision;
-    request("/api/users/me", {}, false, false, [this, generation, revision](int status, const QJsonObject& value) {
+    request(ProfilePath, {}, false, false, [this, generation, revision](int status, QJsonObject value) {
+        value = accountResponse(value);
         m_AccountRefreshPending = false;
         const bool refreshAgain = m_AccountRefreshAgain;
         m_AccountRefreshAgain = false;
@@ -239,7 +248,8 @@ void ProviderWorker::start(int width, int height, int fps, int bitrate) {
     m_Startup->start();
     if (expiryPreflightNeeded(m_Token)) {
         emit stage("connecting", "Checking your AntCloud login before connecting…");
-        request("/api/users/me", {}, false, true, [this](int status, const QJsonObject& value) {
+        request(ProfilePath, {}, false, true, [this](int status, QJsonObject value) {
+            value = accountResponse(value);
             if (status != 200 || !accountLimit(value)) {
                 finish("Could not renew your AntCloud login before connecting. Retry, or sign in again if the saved login expired."); return;
             }
@@ -339,7 +349,7 @@ void ProviderWorker::poll() {
     if (!m_Active || !m_Namespace || m_Ready || m_RequestPending) return;
     m_RequestPending = true;
     if (m_Address.isEmpty()) {
-        request("/api/vm/getVmIp", {}, false, true, [this](int status, const QJsonObject& value) {
+        request(VmIpPath, {}, false, true, [this](int status, const QJsonObject& value) {
             m_RequestPending = false;
             if (status == 200) {
                 m_Address = vmAddress(value);
@@ -357,11 +367,11 @@ void ProviderWorker::poll() {
 void ProviderWorker::checkConnection() {
     if (!m_Active || m_Ready) return;
     m_RequestPending = true;
-    request("/api/vm/checkConnectionStatus", {}, false, true, [this](int status, const QJsonObject& value) {
+    request(VmStatusPath, {}, false, true, [this](int status, const QJsonObject& value) {
         m_RequestPending = false;
         if (status == 200 && connected(value)) {
             m_RequestPending = true;
-            request("/api/vm/getVmIp", {}, false, true, [this](int status, const QJsonObject& value) {
+            request(VmIpPath, {}, false, true, [this](int status, const QJsonObject& value) {
                 m_RequestPending = false;
                 if (status != 200 || vmAddress(value) != m_Address) {
                     finish("The VM address could not be revalidated. Check the dashboard before restarting the stream."); return;
@@ -383,7 +393,8 @@ void ProviderWorker::pair(QString pin, qulonglong generation) {
     if (generation != qulonglong(m_Generation) || !m_Active || m_Shutdown || m_Address.isEmpty()
         || m_PinSubmitted || !pattern.match(pin).hasMatch()) return;
     m_PinSubmitted = true;
-    request("/api/vm/vmauth", {{"pin", pin}}, true, true, [this](int status, const QJsonObject& value) {
+    // The provider renamed this field to "code"; a "pin" body is rejected with 400.
+    request(VmAuthPath, {{"code", pin}}, true, true, [this](int status, const QJsonObject& value) {
         if (status != 200 || !pinAccepted(value)) finish("The pairing PIN was not confirmed. Check the dashboard before retrying; it will not be submitted again automatically.");
     });
 }

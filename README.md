@@ -2,7 +2,7 @@
 
 AntCloud Native is an unofficial macOS client for AntCloud Windows VMs. It combines AntCloud account access and VM startup with Moonlight's native video, audio and input engine in one app.
 
-Version **2.0.1** · [Repository](https://github.com/AshrafMd-1/antcloud-native-macos) · [Releases](https://github.com/AshrafMd-1/antcloud-native-macos/releases)
+Version **2.0.2** · [Repository](https://github.com/AshrafMd-1/antcloud-native-macos) · [Releases](https://github.com/AshrafMd-1/antcloud-native-macos/releases)
 
 The app targets Apple Silicon and macOS 26 or newer. It is a personal project and is not affiliated with or endorsed by AntCloud or Moonlight.
 
@@ -28,11 +28,15 @@ The app targets Apple Silicon and macOS 26 or newer. It is a personal project an
 
 ## Install and connect
 
-Download `AntCloudNative-2.0.1-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases), extract it and move `AntCloudNative.app` to Applications. The distributed app is locally signed and is not notarized. See [build.md](build.md) for installation details and source-build instructions.
+Download `AntCloudNative-2.0.2-macos.zip` from the [releases page](https://github.com/AshrafMd-1/antcloud-native-macos/releases), extract it and move `AntCloudNative.app` to Applications. The distributed app is locally signed and is not notarized. See [build.md](build.md) for installation details and source-build instructions.
 
 Open the app, sign in, choose the stream settings allowed by your account and select **Connect**. The app opens an AntCloud provider session, starts the VM when needed, discovers its native streaming host, pairs this Mac and launches the Windows desktop.
 
 The app returns to its regular window after streaming ends. Wait until Connect becomes available before starting another session.
+
+Version 2.0.2 follows the current AntCloud request contract for account reads, token renewal and pairing, so saved logins, remaining time and pairing work with the live service. Older builds report a rejected saved login or an unconfirmed pairing PIN against the same service.
+
+AntCloud changes that contract independently of this app. If your password still works on the AntCloud dashboard but the app reports a rejected saved login or an unconfirmed pairing PIN, install the newest release before changing credentials or your VM.
 
 ## Video settings
 

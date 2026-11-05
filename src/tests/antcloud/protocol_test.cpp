@@ -40,11 +40,33 @@ int main(int argc, char** argv) {
     assert(!validToken(QString(16385, 'a')));
     assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "1080"}}}}) == 1080);
     assert(accountLimit({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", 1080}}}}) == 0);
+    // The provider serves the signed-in account as a paginated list; both that shape
+    // and the login response's {user: {...}} shape must reach the same readers.
+    const QJsonObject listed{{"currentPlan", "pro"}, {"resolution", "1440"},
+        {"totalTimeMonth", 1000}, {"timeUsedMonth", 250}};
+    QJsonObject paginated;
+    paginated.insert("docs", QJsonArray{listed});
+    paginated.insert("totalDocs", 1);
+    paginated.insert("limit", 10);
+    paginated.insert("page", 1);
+    assert(accountLimit(accountResponse(paginated)) == 1440);
+    assert(accountRemainingMinutes(accountResponse(paginated)) == 750);
+    assert(accountLimit(accountResponse({{"user", QJsonObject{{"currentPlan", "pro"}, {"resolution", "720"}}}})) == 720);
+    QJsonObject emptyDocs; emptyDocs.insert("docs", QJsonArray());
+    assert(accountLimit(accountResponse(emptyDocs)) == 0);
+    QJsonObject scalarDocs; scalarDocs.insert("docs", QJsonArray{"not-an-object"});
+    assert(accountLimit(accountResponse(scalarDocs)) == 0);
+    assert(accountLimit(accountResponse({{"message", "Endpoint not found."}})) == 0);
     assert(!connected({{"connected", "true"}}));
     assert(!connected({{"connected", 1}}));
     assert(connected({{"connected", true}}));
     assert(pinAccepted({{"message", "success"}, {"data", QJsonObject{{"status", true}}}}));
-    assert(!pinAccepted({{"message", "success"}, {"data", QJsonObject{{"status", "true"}}}}));
+    assert(!pinAccepted({{"message", "success"}, {"data", QJsonObject{{"status", false}}}}));
+    // The provider relays the native host's reply: success carries no boolean status,
+    // and a rejection is a 400 with message "failure".
+    assert(pinAccepted({{"message", "success"}, {"data", "ok"}}));
+    assert(pinAccepted({}));
+    assert(!pinAccepted({{"message", "failure"}, {"data", "Request failed with status code 400"}}));
     assert(vmAddress({{"vmip", "192.0.2.10"}}) == "192.0.2.10");
     assert(vmAddress({{"vmip", "127.0.0.1"}}).isEmpty());
     assert(vmAddress({{"vmip", "0.0.0.0"}}).isEmpty());

@@ -49,6 +49,15 @@ inline int providerMinutes(const QJsonValue& value) {
     return std::isfinite(minutes) && minutes >= 0 && minutes <= std::numeric_limits<int>::max()
         && std::floor(minutes) == minutes ? int(minutes) : -1;
 }
+// The provider returns the signed-in account as {user: {...}} from login and as a
+// paginated {docs: [{...}], totalDocs, ...} list from the authenticated read.
+// Normalize both to the {user: {...}} shape used by the validated readers below.
+inline QJsonObject accountResponse(const QJsonObject& value) {
+    if (value.value("user").isObject()) return value;
+    const auto docs = value.value("docs").toArray();
+    if (!docs.isEmpty() && docs[0].isObject()) return QJsonObject{{"user", docs[0].toObject()}};
+    return value;
+}
 inline int accountRemainingMinutes(const QJsonObject& value) {
     const auto user = value.value("user").toObject();
     const int total = providerMinutes(user.value("totalTimeMonth"));
@@ -70,8 +79,13 @@ inline bool connected(const QJsonObject& value) {
     return value.value("connected").isBool() && value.value("connected").toBool();
 }
 inline bool pinAccepted(const QJsonObject& value) {
+    // An explicit boolean still decides when the provider sends one.
     const auto result = value.value("data").toObject().value("status");
-    return value.value("message").toString() == "success" && result.isBool() && result.toBool();
+    if (result.isBool()) return result.toBool();
+    // The provider now relays the native host's reply and answers a forwarded PIN
+    // with message "success" and no boolean status.
+    const QString message = value.value("message").toString();
+    return message.isEmpty() || message == "success";
 }
 inline QString vmAddress(const QJsonObject& value) {
     if (!value.value("vmip").isString()) return {};
